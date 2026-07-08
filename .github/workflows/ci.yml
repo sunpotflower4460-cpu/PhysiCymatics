@@ -1,0 +1,16 @@
+name: physics-truth-ci
+on: [push, pull_request]
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install numpy scipy pytest
+      - name: pinned physics tests (fast)
+        run: pytest tests/ -q -m "not slow"
+  # nightly heavy oracle re-runs (c005 convergence, KT full-viscous) added in Phase 4:
+  # slow:
+  #   if: github.event_name == 'schedule'
+  #   ...

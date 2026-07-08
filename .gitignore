@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.npz
+*.ckpt.npz
+.DS_Store
+.build/
+DerivedData/
+*.xcuserstate
+.pytest_cache/

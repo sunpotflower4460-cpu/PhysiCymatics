@@ -1,0 +1,219 @@
+{
+ "experiment": "c001_free_circular_plate_calibration",
+ "put_in": "Kirchhoff-Love equation, free-edge BC, steel params, linear point-drive model",
+ "routes": {
+  "route1": "Bessel boundary determinant",
+  "route2": "Rayleigh-Ritz energy (independent of BC algebra)"
+ },
+ "cross_check_max_rel_err": 1.581854799479635e-10,
+ "topology_discovered_matches_labels": true,
+ "chladni_law": {
+  "p": 2.154728225162332,
+  "r2": 0.9646069295008579,
+  "expected": "≈2 (established empirical)"
+ },
+ "plate": {
+  "material": "steel",
+  "E_pa": 200000000000.0,
+  "rho": 7850.0,
+  "h_m": 0.001,
+  "a_m": 0.12,
+  "nu": 0.3
+ },
+ "eigenfrequencies_hz": [
+  {
+   "m": 2,
+   "n": 0,
+   "f_hz": 90.5
+  },
+  {
+   "m": 0,
+   "n": 1,
+   "f_hz": 152.0
+  },
+  {
+   "m": 3,
+   "n": 0,
+   "f_hz": 210.0
+  },
+  {
+   "m": 1,
+   "n": 1,
+   "f_hz": 345.7
+  },
+  {
+   "m": 4,
+   "n": 0,
+   "f_hz": 368.6
+  },
+  {
+   "m": 5,
+   "n": 0,
+   "f_hz": 565.5
+  },
+  {
+   "m": 2,
+   "n": 1,
+   "f_hz": 595.3
+  },
+  {
+   "m": 0,
+   "n": 2,
+   "f_hz": 649.0
+  },
+  {
+   "m": 6,
+   "n": 0,
+   "f_hz": 799.8
+  },
+  {
+   "m": 3,
+   "n": 1,
+   "f_hz": 894.9
+  },
+  {
+   "m": 1,
+   "n": 2,
+   "f_hz": 1009.7
+  },
+  {
+   "m": 7,
+   "n": 0,
+   "f_hz": 1071.3
+  },
+  {
+   "m": 4,
+   "n": 1,
+   "f_hz": 1241.6
+  },
+  {
+   "m": 2,
+   "n": 2,
+   "f_hz": 1424.3
+  },
+  {
+   "m": 0,
+   "n": 3,
+   "f_hz": 1481.4
+  },
+  {
+   "m": 5,
+   "n": 1,
+   "f_hz": 1633.4
+  },
+  {
+   "m": 3,
+   "n": 2,
+   "f_hz": 1889.9
+  },
+  {
+   "m": 1,
+   "n": 3,
+   "f_hz": 2008.2
+  },
+  {
+   "m": 6,
+   "n": 1,
+   "f_hz": 2069.2
+  },
+  {
+   "m": 4,
+   "n": 2,
+   "f_hz": 2404.5
+  },
+  {
+   "m": 7,
+   "n": 1,
+   "f_hz": 2548.0
+  },
+  {
+   "m": 2,
+   "n": 3,
+   "f_hz": 2588.1
+  },
+  {
+   "m": 0,
+   "n": 4,
+   "f_hz": 2647.4
+  },
+  {
+   "m": 5,
+   "n": 2,
+   "f_hz": 2966.8
+  },
+  {
+   "m": 3,
+   "n": 3,
+   "f_hz": 3219.3
+  },
+  {
+   "m": 1,
+   "n": 4,
+   "f_hz": 3340.5
+  },
+  {
+   "m": 6,
+   "n": 2,
+   "f_hz": 3575.4
+  },
+  {
+   "m": 4,
+   "n": 3,
+   "f_hz": 3900.3
+  },
+  {
+   "m": 7,
+   "n": 2,
+   "f_hz": 4229.6
+  },
+  {
+   "m": 5,
+   "n": 3,
+   "f_hz": 4630.0
+  }
+ ],
+ "drive_point": {
+  "center_reachable": 4,
+  "center_all_m0": true,
+  "edge_reachable": 32,
+  "total": 32
+ },
+ "literature_anchors_nu033": [
+  {
+   "mode": "(2,0)",
+   "lam2_memory": 5.253,
+   "lam2_computed": 5.262,
+   "diff_pct": 0.17
+  },
+  {
+   "mode": "(0,1)",
+   "lam2_memory": 9.084,
+   "lam2_computed": 9.069,
+   "diff_pct": 0.17
+  },
+  {
+   "mode": "(3,0)",
+   "lam2_memory": 12.23,
+   "lam2_computed": 12.244,
+   "diff_pct": 0.11
+  },
+  {
+   "mode": "(1,1)",
+   "lam2_memory": 20.52,
+   "lam2_computed": 20.513,
+   "diff_pct": 0.03
+  }
+ ],
+ "tier": {
+  "eigenvalues": "measured (within known-physics model, two independent routes)",
+  "chladni_p": "measured (fit)",
+  "center_rings_only": "measured within model / established consequence",
+  "literature_anchor_values": "MEMORY-BASED — confirm against Leissa before repo GREEN"
+ },
+ "floors": [
+  "linear small-deflection (von Karman excluded)",
+  "no air loading/radiation damping",
+  "point-force drive model (real shaker has finite contact area)",
+  "damping zeta not measured (assumed in UI transfer function)"
+ ]
+}

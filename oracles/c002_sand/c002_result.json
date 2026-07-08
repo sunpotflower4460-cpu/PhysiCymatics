@@ -1,0 +1,41 @@
+{
+ "experiment": "c002_bounce_emergence (c002b engine)",
+ "put_in": {
+  "mechanics": "gravity, exact ballistic flight, impact on moving tilted surface, sit/detach by support sign",
+  "assumed": {
+   "e": 0.75,
+   "beta": 0.8,
+   "v_stick_frac": 0.3,
+   "Gamma_main": 80,
+   "amplitude_um": 860.5,
+   "f_hz": 152.0,
+   "mode": "(0,1) from c001"
+  }
+ },
+ "forbidden_check": "W enters only as surface height/velocity/accel/slope; no node-referencing term",
+ "headline": {
+  "direction_emerged": "grains migrate to LOW |W| (nodes); median |W| 0.415 -> 0.144",
+  "ring_enrichment_uniformIC": 3.03,
+  "ring_enrichment_midslopeIC": 2.69,
+  "ring_radius_matches_c001": "0.680a",
+  "formation_time_order_s": "~10-20 s to ~3x at G=80 (not yet saturated at 24 s)",
+  "control_G0p8": "frozen: trapped=1.0, no losses, no transport"
+ },
+ "unasked_emergence": {
+  "edge_sand_loss": "24% of grains thrown off the free edge at G=80 (real plates do this)",
+  "antinode_instability": "grains at exact antinode = unstable equilibrium in ballistic 'popcorn' regime; escape slow (>20 s)",
+  "gamma_window": "G=15 barely transports, G=40 clear, G=80 strong; window is measurable and app-relevant"
+ },
+ "dead_ends_recorded": {
+  "G4_frozen": "G=4 (A=43um): kicks ~1um/bounce, pattern would need >minutes \u2014 real Chladni demos live at resonant amplitudes (G tens-hundreds)",
+  "rolling_channel": "c_roll=5/7 with c_rr=0.02: rolling resistance exceeds phase-correlation drift by ~30x -> frozen; rolling channel shelved (c002c candidate with measured c_rr)"
+ },
+ "floors": [
+  "no air (inverse-Chladni regime excluded by design for now)",
+  "no grain-grain interaction (dilute limit)",
+  "no back-reaction of sand mass on plate mode",
+  "e/beta/v_stick assumed, not measured; tangential beta is a simplification of Coulomb",
+  "single mode (0,1); multi-mode & square plate pending",
+  "formation curve not saturated at 24 s"
+ ]
+}
