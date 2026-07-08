@@ -36,3 +36,11 @@
 | c003 高粘性(歩行液滴) | 20cSt/80Hz 文献 | **YELLOW据え置き**（λはGREEN 6.1%／閾値5.3 vs 4.2–4.3g＝正直な床。KT完全粘性版が宿題） | oracles/c003_faraday/c003_walker_check.json |
 
 - 2026-07-08 / claude-sandbox→claude-code / Phase 4 原典照合4件を取り込み。pack v1.4（external_anchors GREEN×4, all_yellows_cleared=true）。c001/c003境界層=GREEN、c005=established。c003高粘性のみYELLOW据え置き（KTフル粘性版が必要、床を c003_walker_check.json に記録） / established / measured
+
+## Web版（webapp/）— ブラウザ実装（Phase 3の代替・実機なし）
+
+Gemini製UI(`ui_shell/App.jsx`)をTS移植し、モック物理を実エンジンへ置換。板=c001モーダル場、
+水=c003 Faraday閾値。`npm run build`＋vitest緑、Playwrightで152Hzリング/90.5Hz静止/閾値下静寂/
+440Hz正方格子を確認（スクショ検証）。砂動力学(c002)・光(c006)は未計算＝正直な床。
+
+- 2026-07-08 / claude-code / webapp/（Vite+React+TS）新規。板152Hz単一リング・90.5Hz共鳴せず・水は閾値下静寂/f2/λ・高周波正方格子(c005)を実装。照合テスト（板↔c001 rel<1e-6、水↔c003<0.1%）5件緑。CIに webapp ジョブ追加（push緑ゲート）。Swift/実機UIは据え置き / (実装, ブラウザPlaywright検証済み)

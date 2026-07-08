@@ -30,6 +30,24 @@ jobs:
       - name: nightly heavy oracle tests (slow)
         run: pytest tests/ -q -m slow
 
+  # Web版: build + golden-test the browser physics engines (板↔c001, 水↔c003).
+  # Verified locally (npm run build + vitest green) so it rides the push gate.
+  webapp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: install
+        working-directory: webapp
+        run: npm ci
+      - name: build (tsc + vite)
+        working-directory: webapp
+        run: npm run build
+      - name: golden tests (vitest — plate↔c001, faraday↔c003)
+        working-directory: webapp
+        run: npm test
+
   # Phase-2: build + golden-test the Swift PhysicsCore against Python-generated
   # JSON. Kept OFF the push/PR gate (no Swift toolchain was available at authoring
   # time to verify compilation) and wired to nightly + manual dispatch, so the
