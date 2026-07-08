@@ -1,0 +1,13 @@
+{
+ "source": "Case & Parkinson (1957) / Miles (1967)",
+ "reference": "Case, K.M. & Parkinson, W.C., J. Fluid Mech. 2, 172 (1957); Miles, J.W., J. Fluid Mech. 30, 163 (1967)",
+ "term_tested": "bottom Stokes boundary-layer damping in c003 gamma_k",
+ "our_form": "gamma_BL = k * sqrt(nu*omega/2) / sinh(2kh)",
+ "canonical_form": "k * sqrt(nu*omega/2) / sinh(2kh)  (Stokes layer, coefficient 1)",
+ "free_parameters": 0,
+ "coefficient_match": true,
+ "regime_note": "BL term matters only for kh <~ 1 (shallow / low-frequency); collapses vs bulk 2*nu*k^2 for kh>>1, consistent with c003 measured band_ms2 collapse above ~57 Hz",
+ "verdict": "GREEN",
+ "detail": "c003 bottom-BL term = k*sqrt(nu*omega/2)/sinh(2kh), coefficient 1 (no fudge); matches canonical form; BL matters only kh<~1",
+ "ledger": "c003 bottom-boundary-layer coefficient YELLOW -> GREEN (canonical form, no fudge factor)"
+}

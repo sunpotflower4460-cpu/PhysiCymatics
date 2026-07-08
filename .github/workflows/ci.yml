@@ -1,0 +1,51 @@
+name: physics-truth-ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:       # manual: run the Swift golden build on demand
+  schedule:
+    - cron: "0 17 * * *"   # nightly heavy oracle re-runs (~02:00 JST)
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install numpy scipy pytest
+      - name: pinned physics tests (fast)
+        run: pytest tests/ -q -m "not slow"
+
+  # Phase-1 skeleton: nightly slow tests (c005 linear-onset route-2 self-check).
+  # Phase 4 grows this into the full c005 convergence + Kumar-Tuckerman
+  # full-viscous re-runs and writes a ledger line per run.
+  slow:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install numpy scipy pytest
+      - name: nightly heavy oracle tests (slow)
+        run: pytest tests/ -q -m slow
+
+  # Phase-2: build + golden-test the Swift PhysicsCore against Python-generated
+  # JSON. Kept OFF the push/PR gate (no Swift toolchain was available at authoring
+  # time to verify compilation) and wired to nightly + manual dispatch, so the
+  # first real toolchain run validates the port without blocking the fast gate.
+  # The Python side (tests/test_golden_parity.py) already guards the golden data
+  # on every push.
+  swift-core:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: golden ↔ reference parity (regenerate + check)
+        run: |
+          python3 -m pip install --quiet numpy scipy
+          python3 reference/gen_golden.py
+          git diff --exit-code core/PhysicsCore/Tests/PhysicsCoreTests/Resources
+      - name: swift test (PhysicsCore golden tests)
+        working-directory: core/PhysicsCore
+        run: swift test -v

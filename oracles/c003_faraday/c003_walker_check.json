@@ -1,0 +1,27 @@
+{
+ "source": "walking-droplet / Faraday oil literature, 20 cSt silicone oil at 80 Hz",
+ "reference": "Douady (1990); Kumar & Tuckerman, J. Fluid Mech. 279, 49 (1994); walking-droplet papers (Couder/Bush groups)",
+ "fluid": {
+  "nu_cSt": 20.0,
+  "f_drive_hz": 80.0
+ },
+ "wavelength": {
+  "ours_mm": 5.04,
+  "lit_mm": 4.75,
+  "dev_pct": 6.1,
+  "verdict": "GREEN"
+ },
+ "threshold": {
+  "ours_g": 5.3,
+  "lit_g": [
+   4.2,
+   4.3
+  ],
+  "verdict": "documented floor"
+ },
+ "floor_reason": "gamma_F/omega = 0.124 at 20 cSt puts the weak-damping (Benjamin-Ursell) approximation at the edge of its valid domain; accurate high-viscosity threshold needs the full-viscous Kumar-Tuckerman Floquet solver",
+ "independent_corroboration": "this over-estimate independently confirms the known Phase-4 task: KT full-viscous version is required for high-viscosity accuracy (water is unaffected: kh>>1, low nu)",
+ "verdict": "lambda GREEN (6.1%) / threshold = HONEST FLOOR (not passed, recorded)",
+ "detail": "20cSt oil 80Hz: lambda 5.04 vs lit 4.75mm; gamma_F 5.3 vs lit 4.2-4.3g (weak-damping marginal at 20cSt -> needs Kumar-Tuckerman full-viscous, already a Phase-4 task)",
+ "ledger": "c003 high-viscosity threshold stays YELLOW; oracle = c003.py; floor recorded here"
+}

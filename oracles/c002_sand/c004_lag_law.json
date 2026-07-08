@@ -1,0 +1,7 @@
+{
+ "lag_law": "fixed Gamma: A\u221d1/f\u00b2 -> sand transport collapses at high f",
+ "slope_649_per_s": -8.219632993766901e-05,
+ "slope_152_per_s": -0.013,
+ "switch_run_slope": 1.3398285276732361e-05,
+ "interpretation": "high notes barely move sand; pattern follows the strongest LOW-frequency content"
+}
