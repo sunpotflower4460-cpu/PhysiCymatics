@@ -21,3 +21,4 @@
 - 2026-07-07 / claude-sandbox / c004(遅れ則f^-3.5)・c005(440Hz正方格子獲得/40Hz非正方・θ_r=61°抑圧可視)・c006(近軸0%、T2/T3記録) / measured
 - 2026-07-07 / claude-code / リポジトリ種一式配置。Phase 0開始 / (実装)
 - 2026-07-08 / claude-code / Phase 1: reference/ 整理版（plate_modal / faraday_linear / caustics）をオラクルにビット一致で固定。ピン留めテスト34件緑。zhang_vinals は c005 線形オンセットの route-2 自己検証を slow（夜間CI）骨組みとして追加（成長率が審判linearモードに一致） / (実装, オラクル値に固定)
+- 2026-07-08 / claude-code / Phase 2: core/PhysicsCore（SwiftPM）— Pack ローダー＋PlateModal＋FaradayLinear。reference/gen_golden.py で pack＋参照からゴールデンJSON生成、XCTestで照合（板 rel<1e-6・水<0.1%）。Python側 test_golden_parity で毎push固定。Swiftコンパイルは当環境にツールチェーン無く未検証→CI swift-core を夜間/手動に隔離（緑ゲートはpytest維持） / (実装, Swiftビルド未検証)
