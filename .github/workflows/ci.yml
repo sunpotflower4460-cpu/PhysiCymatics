@@ -1,5 +1,9 @@
 name: physics-truth-ci
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 17 * * *"   # nightly heavy oracle re-runs (~02:00 JST)
 jobs:
   fast:
     runs-on: ubuntu-latest
@@ -10,7 +14,17 @@ jobs:
       - run: pip install numpy scipy pytest
       - name: pinned physics tests (fast)
         run: pytest tests/ -q -m "not slow"
-  # nightly heavy oracle re-runs (c005 convergence, KT full-viscous) added in Phase 4:
-  # slow:
-  #   if: github.event_name == 'schedule'
-  #   ...
+
+  # Phase-1 skeleton: nightly slow tests (c005 linear-onset route-2 self-check).
+  # Phase 4 grows this into the full c005 convergence + Kumar-Tuckerman
+  # full-viscous re-runs and writes a ledger line per run.
+  slow:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install numpy scipy pytest
+      - name: nightly heavy oracle tests (slow)
+        run: pytest tests/ -q -m slow
