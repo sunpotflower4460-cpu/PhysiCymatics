@@ -1,5 +1,5 @@
 {
- "pack_schema": "physicymatics.physics_pack.v1_2",
+ "pack_schema": "physicymatics.physics_pack.v1_4",
  "n_modes": 30,
  "zeta": 0.002,
  "eigenfrequencies_hz": [

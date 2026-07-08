@@ -1,0 +1,58 @@
+{
+ "source": "Leissa NASA SP-160, completely free circular plate, nu=0.33 (canonical anchors)",
+ "reference": "Leissa, A.W., Vibration of Plates, NASA SP-160 (1969), completely free circular plate, nu=0.33",
+ "max_deviation_pct": 0.34,
+ "rows": [
+  {
+   "mode": "(0,1)",
+   "leissa": 9.084,
+   "ours": 9.069,
+   "diff_pct": 0.17
+  },
+  {
+   "mode": "(0,2)",
+   "leissa": 38.5,
+   "ours": 38.507,
+   "diff_pct": 0.02
+  },
+  {
+   "mode": "(1,1)",
+   "leissa": 20.52,
+   "ours": 20.513,
+   "diff_pct": 0.03
+  },
+  {
+   "mode": "(2,0)",
+   "leissa": 5.253,
+   "ours": 5.262,
+   "diff_pct": 0.17
+  },
+  {
+   "mode": "(2,1)",
+   "leissa": 35.25,
+   "ours": 35.243,
+   "diff_pct": 0.02
+  },
+  {
+   "mode": "(3,0)",
+   "leissa": 12.23,
+   "ours": 12.244,
+   "diff_pct": 0.11
+  },
+  {
+   "mode": "(4,0)",
+   "leissa": 21.6,
+   "ours": 21.527,
+   "diff_pct": 0.34
+  },
+  {
+   "mode": "(5,0)",
+   "leissa": 33.1,
+   "ours": 33.062,
+   "diff_pct": 0.12
+  }
+ ],
+ "verdict": "GREEN",
+ "note": "table values are 3-4 sig figs; our two-route eigenvalues agree with the literature anchors",
+ "ledger": "c001 external anchor YELLOW -> GREEN (Leissa max 0.34%, 8 modes)"
+}
