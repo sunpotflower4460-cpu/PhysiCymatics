@@ -91,6 +91,39 @@ export class TransientPlate {
 
   scoreTime(t: number): number { return t - this.epoch }
 
+  /** Per-DOF forcing bound |Phi_j(drive)| * maxForcePeak / M_j [m/s^2 per unit q]. */
+  forceBounds(): Float64Array {
+    const fMax = Math.max(0, ...this.signal.score.events.map((e) => e.forcePeak_N))
+    const out = new Float64Array(this.ndof)
+    for (let j = 0; j < this.ndof; j++) out[j] = (Math.abs(this.phiDrive[j]) * fMax) / this.mass[j]
+    return out
+  }
+
+  /** Per-DOF modal energy amplitude E_j = sqrt(qd^2 + (omega q)^2) at segment end. */
+  energyPerDof(out: Float64Array): void {
+    const q = this.seg ? this.seg.q1 : this.q
+    const qd = this.seg ? this.seg.qd1 : this.qd
+    for (let j = 0; j < this.ndof; j++) out[j] = Math.hypot(qd[j], this.omega[j] * q[j])
+  }
+
+  /** All DOF shape values Phi_j(x, y) (no gradients). */
+  phiAll(x: number, y: number, out: Float64Array): void {
+    const r = Math.hypot(x, y)
+    const idx = Math.min((r * (this.ng1 / this.a)) | 0, this.ng1)
+    const rs = r < 1e-12 ? 1e-12 : r
+    const c = x / rs; const sn = y / rs
+    const cm = [1, c, 0, 0, 0]; const sm = [0, sn, 0, 0, 0]
+    for (let m = 2; m <= 4; m++) {
+      cm[m] = cm[m - 1] * c - sm[m - 1] * sn
+      sm[m] = sm[m - 1] * c + cm[m - 1] * sn
+    }
+    for (let j = 0; j < this.ndof; j++) {
+      const d = this.dofs[j]; const m = this.modes[d.mode].m
+      const R = this.R[d.mode][idx]
+      out[j] = m === 0 ? R : d.kind === 'cos' ? R * cm[m] : R * sm[m]
+    }
+  }
+
   private accel(q: Float64Array, qd: Float64Array, t: number, out: Float64Array): void {
     const ts = t - this.epoch
     const F = this.signal.forcePeakAt(ts) * this.signal.u(ts)

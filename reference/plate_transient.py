@@ -265,6 +265,14 @@ class TransientPlate:
         q, qd = (self._seg[5], self._seg[6]) if self._seg else (self.q, self.qd)
         return float(np.sqrt(np.sum(qd**2 + (self.omega*q)**2)))
 
+    def force_bounds(self):
+        f_max = max((e["forcePeak_N"] for e in self.score.events), default=0.0)
+        return np.abs(self.phi_drive) * f_max / self.mass
+
+    def energy_per_dof(self):
+        q, qd = (self._seg[5], self._seg[6]) if self._seg else (self.q, self.qd)
+        return np.hypot(qd, self.omega * q)
+
     def force_for_amplitude(self, mode_index, target_A):
         """Steady on-resonance force giving surface amplitude target_A (max|Phi|=1)."""
         j = next(i for i, d in enumerate(self.dofs) if d["mode"] == mode_index)
@@ -274,6 +282,9 @@ class TransientPlate:
 CONTACT_SAMPLES = 8       # gap samples per remaining interval (first-contact search)
 EVENT_BISECT_ITERS = 30   # contact-time bisection iterations
 MAX_EVENT_ROUNDS = 8      # max event rounds per step before documented fallback
+SLEEP_WINDOW_S = 0.5
+SLEEP_ACCEL_MARGIN = 0.25   # m/s^2 (see docs/m6_2_event_driven_design.md)
+SLEEP_HEIGHT_MARGIN = 2e-5  # m
 
 
 class TransientSandSim:
@@ -296,12 +307,51 @@ class TransientSandSim:
     c_roll>0 sitting keeps the legacy whole-step rolling update (floor).
     """
 
-    def __init__(self, plate, state, params=None):
+    def __init__(self, plate, state, params=None, sleep_enabled=True):
         self.plate = plate; self.state = state
         self.p = params or sb.SandParams()
         self.t = 0.0; self.n_bounce = 0
         self.n_detach = 0; self.n_event_cap = 0
         self.last_detach_t = None
+        # M6-2 sleep (computation management only; mirrors TS transientSand).
+        self.sleep_enabled = sleep_enabled
+        n = state.pid.size
+        self.sleeping = np.zeros(n, bool)
+        self.wake_t = np.zeros(n)
+        self.sleep_t0 = np.zeros(n)
+        self.eval_cooldown = np.zeros(n, dtype=np.int32)
+        self.skipped_updates = 0
+        self.sleep_evaluations = 0
+        self.wake_count = 0
+        self.force_buf = plate.force_bounds()
+
+    def wake_all(self):
+        st = self.state
+        idx = np.where(self.sleeping & st.alive & ~st.sitting)[0]
+        if idx.size:
+            d = self.t - self.sleep_t0[idx]
+            st.x[idx] += st.vx[idx]*d; st.y[idx] += st.vy[idx]*d
+            st.z[idx] += st.vz[idx]*d - 0.5*G*d*d; st.vz[idx] -= G*d
+        self.sleeping[:] = False
+
+    def refresh_force_bounds(self):
+        self.force_buf = self.plate.force_bounds()
+
+    def materialize_all(self):
+        st, pl = self.state, self.plate
+        idx = np.where(self.sleeping & st.alive)[0]
+        if not idx.size:
+            return
+        fly = idx[~st.sitting[idx]]; sit = idx[st.sitting[idx]]
+        if fly.size:
+            d = self.t - self.sleep_t0[fly]
+            st.x[fly] += st.vx[fly]*d; st.y[fly] += st.vy[fly]*d
+            st.z[fly] += st.vz[fly]*d - 0.5*G*d*d; st.vz[fly] -= G*d
+            self.sleep_t0[fly] = self.t
+        if sit.size and pl._seg is not None:
+            h,_,_,_,_ = pl.surf_at(st.x[sit], st.y[sit], self.t)
+            st.z[sit] = h
+            self.sleep_t0[sit] = self.t
 
     def dt_now(self):
         f = self.plate.score.freq_at(self.t) or self.plate.score.freq_at(self.t + 1e-9) or 152.0
@@ -318,6 +368,26 @@ class TransientSandSim:
         x, y, z, vx, vy, vz = st.x, st.y, st.z, st.vx, st.vy, st.vz
         sitting, alive = st.sitting, st.alive
         cur = np.full(st.pid.size, t)
+        if self.sleep_enabled:
+            energy = pl.energy_per_dof()
+        # Sleeping particles: skip unless due this step; due ones are restored.
+        if self.sleeping.any():
+            not_due = self.sleeping & alive & (self.wake_t > t_new)
+            self.skipped_updates += int(not_due.sum())
+            cur[not_due] = t_new
+            due = np.where(self.sleeping & alive & (self.wake_t <= t_new))[0]
+            if due.size:
+                self.sleeping[due] = False
+                self.wake_count += int(due.size)
+                fly_d = due[~sitting[due]]; sit_d = due[sitting[due]]
+                if fly_d.size:
+                    d = self.wake_t[fly_d] - self.sleep_t0[fly_d]
+                    x[fly_d] += vx[fly_d]*d; y[fly_d] += vy[fly_d]*d
+                    z[fly_d] += vz[fly_d]*d - 0.5*G*d*d; vz[fly_d] -= G*d
+                if sit_d.size:
+                    h,_,_,_,_ = pl.surf_at(x[sit_d], y[sit_d], self.wake_t[sit_d])
+                    z[sit_d] = h
+                cur[due] = np.maximum(self.wake_t[due], t)
 
         def ballistic(idx, tau):
             d = tau - cur[idx]
@@ -461,11 +531,83 @@ class TransientSandSim:
             if p.c_roll == 0.0:
                 vx[li] = 0.0; vy[li] = 0.0
             cur[li] = t_new
+        # Sleep evaluation for particles that finished this step awake.
+        if self.sleep_enabled:
+            self.eval_cooldown = np.maximum(self.eval_cooldown - 1, 0)
+            done = np.where(alive & ~self.sleeping & (self.eval_cooldown == 0)
+                            & (cur >= t_new - 1e-15))[0]
+            if done.size:
+                self.sleep_evaluations += int(done.size)
+                k = 1 + 2*pl.zeta
+                wE = pl.omega * k
+                # |Phi_j(x,y)| per DOF for the finished subset.
+                abs_phi = np.empty((pl.ndof, done.size))
+                for j, d in enumerate(pl.dofs):
+                    W, _, _ = _phi_grad(pl.modes[d["mode"]], d["kind"], x[done], y[done])
+                    abs_phi[j] = np.abs(W)
+                sit_d = done[sitting[done]]; fly_d = done[~sitting[done]]
+                pos = {int(v): i for i, v in enumerate(done)}
+                if sit_d.size:
+                    cols = np.array([pos[int(v)] for v in sit_d])
+                    s0 = ((self.force_buf + wE*energy)[:, None] * abs_phi[:, cols]).sum(axis=0)
+                    s1 = ((wE*self.force_buf)[:, None] * abs_phi[:, cols]).sum(axis=0)
+                    ok = (G - s0) > SLEEP_ACCEL_MARGIN
+                    if ok.any():
+                        idx = sit_d[ok]
+                        delta = np.where(s1[ok] > 0,
+                                          np.minimum((G - SLEEP_ACCEL_MARGIN - s0[ok])/np.where(s1[ok] > 0, s1[ok], 1.0), SLEEP_WINDOW_S),
+                                          SLEEP_WINDOW_S)
+                        good = delta > 8*dt
+                        idx = idx[good]
+                        self.sleeping[idx] = True
+                        self.wake_t[idx] = t_new + delta[good]
+                        self.sleep_t0[idx] = t_new
+                if fly_d.size:
+                    h_base = float((energy/pl.omega).sum())
+                    h_rate = float((self.force_buf/pl.omega).sum())
+                    z0 = z[fly_d]; vz0 = vz[fly_d]
+                    def safe(d):
+                        z_end = z0 + vz0*d - 0.5*G*d*d
+                        tv = np.clip(vz0/G, 0.0, d)
+                        z_min = np.minimum(np.minimum(z0, z_end), z0 + vz0*tv - 0.5*G*tv*tv)
+                        return z_min > h_base + h_rate*d + SLEEP_HEIGHT_MARGIN
+                    lo = np.zeros(fly_d.size); hi = np.full(fly_d.size, SLEEP_WINDOW_S)
+                    ok0 = safe(lo)
+                    full = safe(hi)
+                    for _ in range(40):
+                        mid = 0.5*(lo + hi)
+                        sm = safe(mid)
+                        lo = np.where(sm, mid, lo); hi = np.where(sm, hi, mid)
+                    delta = np.where(full, SLEEP_WINDOW_S, lo)
+                    # Edge-exit root (straight xy from inside the disk).
+                    px, py, pvx, pvy = x[fly_d], y[fly_d], vx[fly_d], vy[fly_d]
+                    A = pvx*pvx + pvy*pvy
+                    B = 2*(px*pvx + py*pvy)
+                    C = px*px + py*py - pl.basis["a"]**2
+                    disc = B*B - 4*A*C
+                    with np.errstate(invalid="ignore", divide="ignore"):
+                        root = np.where((A > 0) & (disc >= 0),
+                                        (-B + np.sqrt(np.maximum(disc, 0)))/np.where(A > 0, 2*A, 1.0),
+                                        np.inf)
+                    delta = np.where(root > 0, np.minimum(delta, root), delta)
+                    good = ok0 & (delta > 8*dt)
+                    idx = fly_d[good]
+                    self.sleeping[idx] = True
+                    self.wake_t[idx] = t_new + delta[good]
+                    self.sleep_t0[idx] = t_new
+                # Failed evaluations back off 16 steps (management only).
+                failed = done[~self.sleeping[done]]
+                self.eval_cooldown[failed] = 16
+        # Edge loss: sleeping flyers still hold their sleep-start xy (inside
+        # the disk), so they are not falsely culled; particles that finished
+        # this step outside are culled now (same semantics as TS).
         off = alive & (np.hypot(x, y) > pl.basis["a"])
         alive[off] = False
+        self.sleeping[off] = False
         self.t = t_new
 
     def advance_to(self, t_target):
         """Advance to EXACTLY t_target (final step shortened; never overshoots)."""
         while self.t < t_target - 1e-15:
             self.step(min(self.dt_now(), t_target - self.t))
+        self.materialize_all()
