@@ -1,0 +1,23 @@
+{
+ "schema": "physicymatics.sand_fixture.v1",
+ "source_commit": "1641d7f19f100c73ec3c87c5074a7571c91733e2",
+ "generator": "scripts/gen_sand_fixtures.py",
+ "oracle": "oracles/c002_sand/c002b.py",
+ "mode": {
+  "m": 0,
+  "root_idx": 0,
+  "f_hz": 151.99187253889957,
+  "a_m": 0.12,
+  "ngrid": 4096
+ },
+ "Gamma": 80,
+ "e": 0.75,
+ "beta": 0.8,
+ "spp": 44,
+ "v_stick_frac": 0.3,
+ "bisect_iters": 14,
+ "Np": 50,
+ "t_max_s": 0.3,
+ "init_seed": 7,
+ "arrays_sha256": "119a43ff679c3479a796bb6bb637751078178f306b141dca0e7be840478f6ecc"
+}

@@ -44,3 +44,8 @@ Gemini製UI(`ui_shell/App.jsx`)をTS移植し、モック物理を実エンジ�
 440Hz正方格子を確認（スクショ検証）。砂動力学(c002)・光(c006)は未計算＝正直な床。
 
 - 2026-07-08 / claude-code / webapp/（Vite+React+TS）新規。板152Hz単一リング・90.5Hz共鳴せず・水は閾値下静寂/f2/λ・高周波正方格子(c005)を実装。照合テスト（板↔c001 rel<1e-6、水↔c003<0.1%）5件緑。CIに webapp ジョブ追加（push緑ゲート）。Swift/実機UIは据え置き / (実装, ブラウザPlaywright検証済み)
+- 2026-10-29 / claude-code-ci / M0-M1 (砂指示書): reference/sand_bounce.py が c002b とビット一致（50粒0.3s）。Γ=80・500粒・24s で中央値|W| 0.415→0.144・リング2.96倍、Γ=0.8 は凍結。映像 renders/m1_gamma80（無音）、報告 docs/sand_implementation_report.md。M2以降未着手 / measured (within c002 model)
+- 2026-10-29 / claude-code-ci / M2 (砂指示書): TS砂コアがM1 fixtureと1e-9m未満で一致。Worker+Sand表示をAppへ接続（再生/停止/再開/撒き直し/粒子数/Γ/作品表示）。ブラウザ実測 500粒×1.00・2000粒×0.42・5000粒×0.15（実時間超過なし）。既存Plate/Fluid回帰OK。報告 docs/sand_implementation_report.md / measured (within c002 model)
+- 2026-10-29 / claude-code-ci / M3 (砂指示書): 多モード過渡応答（1300Hz迄10モード18自由度・モーダル質量・RK4+Hermite）を Python参照+TS に実装。定常振幅は解析式と2%以内、中央駆動対称性・切替連続性を確認。score から力とPCMを生成し演奏プリセット（152→649→368.6Hz）と自由周波数（吸着なし、173.3Hzで振幅低下を観察）をブラウザ確認。500粒で約×0.5。報告 docs/sand_implementation_report.md / measured (within model)
+- 2026-10-29 / claude-code-ci / M4-M5 (砂指示書): 確定時刻CLIで音声入り縦長動画 renders/m4_performance（200粒・3区間・12s・A/V一致をffprobe確認）。規模ベンチ 100k粒で約1064万step/s、100k粒動画 renders/m5_scale100k（リング2.74倍・593s）まで到達。60万粒は単一モード約3.4h／多モード約100h規模と実測外挿し未達として記録（チェックポイント+高速backendが次段）。報告 docs/sand_implementation_report.md / measured (within model)
+- 2026-10-29 / claude-code-ci / M5前進 (砂指示書): 表面評価をバッチ化（従来計算と1e-12未満一致）、render CLIにチェックポイント再開を追加（中断→再開が最終状態・フレームとも一致）。過渡backend大規模実測 600k粒=約34万step/s → 36秒演奏は約301時間と判明。60万粒ジョブ renders/m5_600k を開始し再開を証明（3フレーム+checkpoint）。完成動画は未達として記録 / measured (within model)
