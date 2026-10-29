@@ -4,8 +4,8 @@ import { drawParticles } from '../rendering/particleRenderer'
 import type { SandSnapshot } from '../simulation/types'
 import type { TransientStats } from '../simulation/transientSand'
 import { calibratedForceN } from '../simulation/transientSand'
-import { singleToneScore, type PerformanceScore } from '../simulation/sequence'
-import { ScoreAudio } from '../audio/sequenceAudio'
+import type { PerformanceScore } from '../simulation/sequence'
+import { ScoreStreamAudio } from '../audio/scoreWorklet'
 
 // Sand stage: single-mode (M2) and performance / free-frequency (M3) modes.
 // Physics runs in a Worker; this component only sends controls and draws snapshots.
@@ -30,7 +30,7 @@ function performanceScore(forceN: number): PerformanceScore {
 export default function ParticleStage({ seed0 }: { seed0: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const workerRef = useRef<Worker | null>(null)
-  const audioRef = useRef<ScoreAudio | null>(null)
+  const audioRef = useRef<ScoreStreamAudio | null>(null)
   const [mode, setMode] = useState<'single' | 'perf'>('single')
   const [playing, setPlaying] = useState(false)
   const [count, setCount] = useState(500)
@@ -78,18 +78,18 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
   const post = (m: unknown) => workerRef.current?.postMessage(m)
   const initSingle = (g: number, c: number, s: number) => {
     setMode('single'); setGamma(g); setCount(c); setSeed(s); setPlaying(false); setError(null)
-    audioRef.current?.pause()
+    void audioRef.current?.pause()
     post({ type: 'init', gamma: g, count: c, seed: s })
   }
   const initPerf = (score: PerformanceScore, c: number, s: number, off: boolean) => {
     setMode('perf'); setCount(c); setSeed(s); setPlaying(false); setError(null)
-    if (!audioRef.current) audioRef.current = new ScoreAudio()
-    audioRef.current.load(score)
+    if (!audioRef.current) audioRef.current = new ScoreStreamAudio()
+    void audioRef.current.load(score)
     post({ type: 'initPerformance', score, count: c, seed: s, driveXY: off ? DRIVE_OFF : DRIVE_CENTER })
   }
   const togglePlay = () => {
     if (playing) {
-      post({ type: 'pause' }); audioRef.current?.pause(); setPlaying(false)
+      post({ type: 'pause' }); void audioRef.current?.pause(); setPlaying(false)
     } else {
       post({ type: 'play' })
       if (mode === 'perf') void audioRef.current?.play()
@@ -99,7 +99,8 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
   const applyFreq = () => {
     const f = Math.min(2000, Math.max(20, freq))
     setFreq(f)
-    post({ type: 'setScore', score: singleToneScore(f, calibratedForceN(driveOff ? DRIVE_OFF : DRIVE_CENTER)) })
+    post({ type: 'setFrequency', hz: f })
+    audioRef.current?.setFrequency(f)
   }
   const applyDrive = (off: boolean) => {
     setDriveOff(off)

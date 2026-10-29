@@ -46,6 +46,21 @@ export class ScoreSignal {
 
   forcePeakAt(t: number): number { return this.eventAt(t)?.ev.forcePeak_N ?? 0 }
   freqAt(t: number): number | null { return this.eventAt(t)?.ev.frequency_hz ?? null }
+
+  /** Integrated phase theta(t) (continuous across events). Outside events,
+   *  holds the phase at the nearest event boundary. */
+  thetaAt(t: number): number {
+    const evs = this.score.events
+    if (!evs.length) return this.score.initialPhase_rad
+    if (t <= evs[0].start_s) return this.theta0[0]
+    for (let i = 0; i < evs.length; i++) {
+      const e = evs[i]
+      if (t < e.start_s) return this.theta0[i]
+      if (t < e.end_s) return this.theta0[i] + 2 * Math.PI * e.frequency_hz * (t - e.start_s)
+    }
+    const last = evs[evs.length - 1]
+    return this.theta0[evs.length - 1] + 2 * Math.PI * last.frequency_hz * (last.end_s - last.start_s)
+  }
 }
 
 /** PCM from the same score: sample k is at time k/sampleRate, starting at 0. */

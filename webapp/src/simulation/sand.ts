@@ -63,10 +63,10 @@ export class SandSim {
   get vStick(): number { return this.p.vStickFrac * this.surface.A * this.surface.omega }
   get nAlive(): number { let s = 0; for (const v of this.state.alive) s += v; return s }
 
-  step(): void {
+  step(dtOverride?: number): void {
     const { surface: s, state: st, p } = this
-    const dt = this.dt; const t = this.t; const w = s.omega; const A = s.A
-    const tNew = (this.stepIndex + 1) * dt
+    const dt = dtOverride ?? this.dt; const t = this.t; const w = s.omega; const A = s.A
+    const tNew = dtOverride === undefined ? (this.stepIndex + 1) * this.dt : t + dt
     const s_ = Math.sin(w * tNew); const c_ = Math.cos(w * tNew)
     const n = st.id.length
     for (let i = 0; i < n; i++) {
@@ -139,7 +139,12 @@ export class SandSim {
   }
 
   advanceTo(tTarget: number): void {
-    while (this.t < tTarget - 1e-15) this.step()
+    // Exactly tTarget: full fixed steps, then one shortened final step.
+    while (this.t < tTarget - 1e-15) {
+      const rem = tTarget - this.t
+      if (rem >= this.dt - 1e-18) this.step()
+      else { this.step(rem); this.stepIndex = Math.round(this.t / this.dt) }
+    }
   }
 
   // ----- measurement only (reads state; never feeds back into step) -----
