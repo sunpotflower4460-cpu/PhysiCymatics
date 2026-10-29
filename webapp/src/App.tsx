@@ -8,6 +8,7 @@ import * as plate from './physics/plate'
 import * as faraday from './physics/faraday'
 import { shapeAt } from './physics/shape'
 import { ToneEngine } from './physics/audio'
+import ParticleStage from './components/ParticleStage'
 
 // ============================================================================
 // PhysiCymatics Web版 — ported from ui_shell/App.jsx.
@@ -165,6 +166,7 @@ const SimulatorScreen = ({
   const stageRef = useRef<HTMLDivElement>(null)
   const [showABSheet, setShowABSheet] = useState(false)
   const [plateGain, setPlateGain] = useState(1)
+  const [sandView, setSandView] = useState(false)
 
   const detents = plate.eigenfrequencies()
 
@@ -218,16 +220,21 @@ const SimulatorScreen = ({
       {/* Top Bar */}
       <div className="absolute top-0 w-full z-20 p-4 flex justify-between items-center bg-gradient-to-b from-[var(--void)] to-transparent">
         <div className="flex bg-[var(--hair)] rounded p-1 text-sm font-ui">
-          <button className={`px-3 py-1 rounded ${config.media === 'plate' ? 'bg-[var(--plate)] text-white' : 'text-[var(--text2)]'}`} onClick={() => setMedia('plate')}>Plate</button>
-          <button className={`px-3 py-1 rounded ${config.media === 'fluid' ? 'bg-[var(--plate)] text-white' : 'text-[var(--text2)]'}`} onClick={() => setMedia('fluid')}>Fluid</button>
+          <button className={`px-3 py-1 rounded ${!sandView && config.media === 'plate' ? 'bg-[var(--plate)] text-white' : 'text-[var(--text2)]'}`} onClick={() => { setSandView(false); setMedia('plate') }}>Plate</button>
+          <button className={`px-3 py-1 rounded ${!sandView && config.media === 'fluid' ? 'bg-[var(--plate)] text-white' : 'text-[var(--text2)]'}`} onClick={() => { setSandView(false); setMedia('fluid') }}>Fluid</button>
+          <button className={`px-3 py-1 rounded ${sandView ? 'bg-[var(--plate)] text-white' : 'text-[var(--text2)]'}`} onClick={() => setSandView(true)}>Sand</button>
         </div>
         <div className="text-[12px] text-[var(--text2)] flex items-center gap-1 font-mono bg-[var(--void)]/50 px-2 py-1 rounded backdrop-blur">
           {config.media === 'plate' ? '鋼の円板24cm' : `水 深さ${(config.fluid.depth_m * 1000).toFixed(0)}mm`} <Settings size={12} />
         </div>
       </div>
 
-      <FidelityBadge config={config} />
+      {!sandView && <FidelityBadge config={config} />}
 
+      {sandView ? (
+        <ParticleStage seed0={config.seed} />
+      ) : (
+      <>
       {/* Stage */}
       <div ref={stageRef} className="flex-1 relative bg-[var(--void)] overflow-hidden flex items-center justify-center pt-16">
         {config.media === 'plate' ? (
@@ -342,6 +349,8 @@ const SimulatorScreen = ({
 
         <div className="absolute -top-4 left-1/2 -translate-x-1/2 w-16 h-1.5 bg-[var(--hair)] rounded-full cursor-pointer hover:bg-[var(--text2)]" onClick={() => setRawPanelOpen(true)} />
       </div>
+      </>
+      )}
 
       {showABSheet && (
         <div className="absolute inset-0 z-50 bg-[var(--void)]/90 backdrop-blur-sm flex items-center justify-center p-6">
@@ -436,7 +445,7 @@ const DisciplineScreen = () => (
         <li><span className="text-[var(--mock)]">MOCK</span>: 音声FFT等。この見た目を物理の目標にしない。</li>
       </ul>
       <h3 className="text-[var(--text)] font-bold text-lg mb-2">正直な床</h3>
-      <p className="mb-4">板の減衰ζはPLACEHOLDER(0.002・未測定)。水の振幅は線形理論では決まらない（正規化表示）。砂の形成動力学(c002)・光(c006)は本Web版では未計算。</p>
+      <p className="mb-4">板の減衰ζはPLACEHOLDER(0.002・未測定)。水の振幅は線形理論では決まらない（正規化表示）。砂（c002）はSand表示で粒子ごとに計算（単一モード・粒子間衝突なし）。光(c006)は本Web版では未計算。</p>
       <div className="text-[10px] mt-8 opacity-50 font-mono border-t border-[var(--hair)] pt-4">
         Kirchhoff–Love Plate Theory<br />Benjamin &amp; Ursell 1954<br />Kumar &amp; Tuckerman 1994 / Chen &amp; Viñals PRE 60,559
       </div>
