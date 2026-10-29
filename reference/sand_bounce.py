@@ -212,15 +212,18 @@ class SandSim:
     def v_stick(self):
         return self.p.v_stick_frac*self.surface.A*self.surface.omega
 
-    def step(self):
+    def step(self, dt_override=None):
         p, s, st = self.p, self.surface, self.state
         e, beta, c_roll, c_rr = p.e, p.beta, p.c_roll, p.c_rr
-        w, A, dt, t = s.omega, s.A, self.dt, self.t
+        w, A, t = s.omega, s.A, self.t
+        dt = self.dt if dt_override is None else float(dt_override)
         x, y, z = st.x, st.y, st.z
         vx, vy, vz = st.vx, st.vy, st.vz
         sitting, alive = st.sitting, st.alive
         v_stick = self.v_stick
-        t_new = (self.step_index + 1)*dt  # same as c002b: step*dt (step 1-based)
+        # Default fixed-step path keeps c002b's (step_index+1)*dt exactly;
+        # shortened final steps (advance_to) use t+dt.
+        t_new = (self.step_index + 1)*self.dt if dt_override is None else t + dt
         s_, c_ = np.sin(w*t_new), np.cos(w*t_new)
         fly = alive & ~sitting
         if fly.any():
@@ -297,8 +300,14 @@ class SandSim:
         self.step_index += 1
 
     def advance_to(self, t_target):
+        """Advance to EXACTLY t_target (final step shortened; never overshoots)."""
         while self.t < t_target - 1e-15:
-            self.step()
+            rem = t_target - self.t
+            if rem >= self.dt - 1e-18:
+                self.step()
+            else:
+                self.step(rem)
+                self.step_index = int(round(self.t/self.dt))
 
     def snapshot(self):
         st = self.state

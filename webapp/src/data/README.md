@@ -10,3 +10,4 @@
 - `sand_mode01.json` — c002単一モード4096点符号付き表（`scripts/gen_sand_web_data.py`）。
 - `truth/sand_m1_short.json` — M1 fixtureのWeb照合用コピー。
 - `plate_modes_transient.json` — M3過渡用モード基底（`scripts/gen_transient_web_data.py`）。
+- `truth/transient_m6_parity.json` — M6-1 Python/Web照合用（Python plate_transient 出力）。

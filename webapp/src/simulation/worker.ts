@@ -10,6 +10,7 @@ export type SandWorkerIn =
   | { type: 'init'; gamma: number; count: number; seed: number }
   | { type: 'initPerformance'; score: PerformanceScore; count: number; seed: number; driveXY: [number, number] }
   | { type: 'setScore'; score: PerformanceScore }
+  | { type: 'setFrequency'; hz: number }
   | { type: 'setDrive'; driveXY: [number, number] }
   | { type: 'play' }
   | { type: 'pause' }
@@ -75,6 +76,8 @@ self.onmessage = (ev: MessageEvent<SandWorkerIn>) => {
       postSnapshot()
     } else if (msg.type === 'setScore') {
       if (tsim) { tsim.plate.setScore(msg.score, tsim.t); postSnapshot() }
+    } else if (msg.type === 'setFrequency') {
+      if (tsim) { tsim.plate.setFrequency(msg.hz, tsim.t); postSnapshot() }
     } else if (msg.type === 'setDrive') {
       if (tsim) { tsim.plate.setDrive(msg.driveXY[0], msg.driveXY[1]); postSnapshot() }
     } else if (msg.type === 'play') {

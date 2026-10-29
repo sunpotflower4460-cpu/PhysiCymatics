@@ -20,6 +20,7 @@ export class TransientPlate {
   readonly mass: Float64Array
   phiDrive: Float64Array
   q: Float64Array; qd: Float64Array
+  hBound = 0
   t = 0
   driveXY: [number, number] = [0, 0]
   private seg: { t0: number; t1: number; q0: Float64Array; qd0: Float64Array; q1: Float64Array; qd1: Float64Array } | null = null
@@ -73,6 +74,21 @@ export class TransientPlate {
     this.epoch = atTime
   }
 
+  /** Switch to a single tone at freqHz, phase-continuous with the current
+   *  signal at atTime (same theta, same force peak as current event).
+   *  q/qd and all particle state are preserved; no snapping. */
+  setFrequency(freqHz: number, atTime: number): void {
+    const ts = atTime - this.epoch
+    const theta = this.signal.thetaAt(ts)
+    const force = this.signal.forcePeakAt(ts) || this.signal.score.events[0]?.forcePeak_N || 0
+    const dur = 3600
+    this.setScore({
+      schema: 'physicymatics.score.v1', duration_s: dur, initialPhase_rad: theta,
+      audioGain: this.signal.score.audioGain,
+      events: [{ start_s: 0, end_s: dur, frequency_hz: freqHz, forcePeak_N: force, attack_s: 0, release_s: 0 }],
+    }, atTime)
+  }
+
   scoreTime(t: number): number { return t - this.epoch }
 
   private accel(q: Float64Array, qd: Float64Array, t: number, out: Float64Array): void {
@@ -114,6 +130,12 @@ export class TransientPlate {
     }
     this.q = q; this.qd = qd; this.t = t1
     this.seg = { t0, t1, q0, qd0, q1: Float64Array.from(q), qd1: Float64Array.from(qd) }
+    // Conservative |h| bound over the segment (see Python plate_transient).
+    let hb = 0
+    for (let j = 0; j < n; j++) {
+      hb += Math.max(Math.abs(q0[j]), Math.abs(q[j])) + 0.105 * (t1 - t0) * (Math.abs(qd0[j]) + Math.abs(qd[j]))
+    }
+    this.hBound = hb
   }
 
   /** (h, hx, hy, uz, wtt) at (x, y, tau) inside the current segment. */

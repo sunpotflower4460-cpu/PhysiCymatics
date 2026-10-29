@@ -1,9 +1,13 @@
-// M3 TS gates: score/PCM timing, phase continuity, free-frequency path,
-// steady-state response, center-drive symmetry, state continuity on switch.
+// M3+M6-1 TS gates: score/PCM timing, phase continuity, free-frequency path,
+// steady-state response, center-drive symmetry, state continuity on switch,
+// exact target time, residual time after contact, Python parity (M6 fixture).
 import { describe, it, expect } from 'vitest'
 import { ScoreSignal, renderScorePcm, singleToneScore, type PerformanceScore } from '../sequence'
 import { TransientPlate } from '../plateTransient'
-import { createTransientSim, calibratedForceN } from '../transientSand'
+import { TransientSandSim, createTransientSim, calibratedForceN } from '../transientSand'
+import { initialState } from '../sand'
+import { G } from '../surface'
+import parity from '../../data/truth/transient_m6_parity.json'
 
 const SCORE: PerformanceScore = {
   schema: 'physicymatics.score.v1', duration_s: 0.8, initialPhase_rad: 0, audioGain: 0.2,
@@ -79,5 +83,65 @@ describe('transient plate', () => {
     }
     expect(maxJump).toBeLessThan(0.01)
     expect(sim.nAlive).toBeLessThanOrEqual(30)
+  })
+})
+
+describe('M6-1 time and contact', () => {
+  it('advanceTo ends exactly at the target time', () => {
+    const sim = createTransientSim(singleToneScore(152, 0.05, 10), 5, 1)
+    sim.advanceTo(0.137)
+    expect(Math.abs(sim.t - 0.137)).toBeLessThan(1e-12)
+  })
+
+  it('residual time after a flat-plate bounce is flown', () => {
+    const plate = new TransientPlate(singleToneScore(152, 0, 10))
+    const st = initialState(plate.a, 0, 0, { x: [0], y: [0] })
+    st.z[0] = 0.02
+    const sim = new TransientSandSim(plate, st)
+    const dt = 0.12
+    sim.step(dt)
+    const tc = Math.sqrt((2 * 0.02) / G)
+    const vUp = 0.75 * G * tc
+    const rem = dt - tc
+    expect(Math.abs(st.z[0] - (vUp * rem - 0.5 * G * rem * rem))).toBeLessThan(1e-6)
+    expect(Math.abs(sim.t - dt)).toBeLessThan(1e-15)
+  })
+
+  it('setFrequency keeps phase and plate state', () => {
+    const pl = new TransientPlate(singleToneScore(152, 0.05, 30))
+    const dt = 1 / (44 * 152)
+    while (pl.t < 0.2) pl.beginStep(pl.t, pl.t + dt)
+    const qBefore = Float64Array.from(pl.q)
+    const uBefore = pl.signal.u(pl.scoreTime(pl.t))
+    pl.setFrequency(173.31, pl.t)
+    expect(Math.max(...pl.q.map((v, i) => Math.abs(v - qBefore[i])))).toBe(0)
+    expect(Math.abs(pl.signal.u(pl.scoreTime(pl.t)) - uBefore)).toBeLessThan(1e-9)
+    expect(pl.signal.freqAt(pl.scoreTime(pl.t))).toBe(173.31)
+  })
+
+  it('matches the Python M6 parity fixture within tolerance', () => {
+    const P = parity as unknown as {
+      force_N: number; events: PerformanceScore['events']
+      init_x: number[]; init_y: number[]; x: number[]; y: number[]
+      alive: boolean[]; n_bounce: number; n_detach: number
+    }
+    const score: PerformanceScore = {
+      schema: 'physicymatics.score.v1', duration_s: 0.5, initialPhase_rad: 0, audioGain: 0.15,
+      events: P.events,
+    }
+    const plate = new TransientPlate(score)
+    const st = initialState(plate.a, 0, 0, { x: P.init_x, y: P.init_y })
+    const sim = new TransientSandSim(plate, st)
+    sim.advanceTo(0.5)
+    expect(Math.abs(sim.t - 0.5)).toBeLessThan(1e-12)
+    const dx = Math.max(...P.x.map((v, i) => Math.abs(v - st.x[i])))
+    const dy = Math.max(...P.y.map((v, i) => Math.abs(v - st.y[i])))
+    // Pre-declared tolerance: identical algorithm in float64; only libm /
+    // summation-order differences are expected over 0.5 s of collisions.
+    expect(dx).toBeLessThan(1e-6)
+    expect(dy).toBeLessThan(1e-6)
+    expect(sim.nBounce).toBe(P.n_bounce)
+    expect(sim.nDetach).toBe(P.n_detach)
+    expect([...st.alive].map(Boolean)).toEqual(P.alive)
   })
 })

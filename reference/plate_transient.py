@@ -168,6 +168,11 @@ class TransientPlate:
         self.q, self.qd, self.t = q, qd, t1
         qdd1 = self._accel(q, qd, t1)
         self._seg = (t0, t1, q0, qd0, qdd0, q, qd, qdd1)
+        # Conservative surface-height bound over this segment (any x, y, tau):
+        # |Phi_j| <= 1 and Hermite |q_j(s)| <= max(|q0|,|q1|) + 0.105*h*(|qd0|+|qd1|).
+        hseg = t1 - t0
+        self.h_bound = float(np.sum(np.maximum(np.abs(q0), np.abs(q))
+                                     + 0.105*hseg*(np.abs(qd0) + np.abs(qd))))
 
     def _hermite(self, tau):
         t0, t1, q0, qd0, qdd0, q1, qd1, qdd1 = self._seg
@@ -266,85 +271,201 @@ class TransientPlate:
         return target_A * self.mass[j] * 2*self.zeta * self.omega[j]**2 / abs(self.phi_drive[j])
 
 
+CONTACT_SAMPLES = 8       # gap samples per remaining interval (first-contact search)
+EVENT_BISECT_ITERS = 30   # contact-time bisection iterations
+MAX_EVENT_ROUNDS = 8      # max event rounds per step before documented fallback
+
+
 class TransientSandSim:
-    """Sand on the transient surface. Same contact order as sand_bounce.SandSim;
-    detach when wtt < -g (support N<0); stick when |vn2| < 0.3*v_scale."""
+    """Sand on the transient surface, event-accurate inside each step (M6-1).
+
+    Per step, each particle carries a local time cursor. Flying particles:
+    first contact in (cursor, t1] is searched by sampling the gap
+    z_ballistic - h at CONTACT_SAMPLES fractions of the remaining interval,
+    then bisecting the first sign-changing subinterval; after a bounce the
+    remaining time is processed in further rounds (multiple contacts per
+    step are handled). Sitting particles (c_roll=0): wtt at fixed (x,y) is
+    LINEAR in time inside a Hermite segment, so the detach time
+    (wtt crossing -g) is solved exactly from the two endpoint values and
+    flight resumes from that instant.
+    Detection floor (honest): a contact whose gap dips below zero and back
+    entirely between two adjacent samples (width < remaining/8, with no
+    sample <= 0) can be missed. This is NOT complete detection.
+    If MAX_EVENT_ROUNDS is exhausted, remaining particles are advanced to
+    t1 without further event checks and counted in n_event_cap.
+    c_roll>0 sitting keeps the legacy whole-step rolling update (floor).
+    """
 
     def __init__(self, plate, state, params=None):
         self.plate = plate; self.state = state
         self.p = params or sb.SandParams()
         self.t = 0.0; self.n_bounce = 0
+        self.n_detach = 0; self.n_event_cap = 0
+        self.last_detach_t = None
 
     def dt_now(self):
         f = self.plate.score.freq_at(self.t) or self.plate.score.freq_at(self.t + 1e-9) or 152.0
         return 1.0/(self.p.spp * max(f, 20.0))
 
-    def step(self):
+    def step(self, dt=None):
         p, pl, st = self.p, self.plate, self.state
         e, beta = p.e, p.beta
-        dt = self.dt_now(); t = self.t; t_new = t + dt
+        if dt is None:
+            dt = self.dt_now()
+        t = self.t; t_new = t + dt
         pl.begin_step(t, t_new)
         v_stick = p.v_stick_frac * pl.v_scale()
         x, y, z, vx, vy, vz = st.x, st.y, st.z, st.vx, st.vy, st.vz
         sitting, alive = st.sitting, st.alive
-        fly = alive & ~sitting
-        if fly.any():
-            fi = np.where(fly)[0]
-            xf = x[fi] + vx[fi]*dt; yf = y[fi] + vy[fi]*dt
-            zf = z[fi] + vz[fi]*dt - 0.5*G*dt*dt; vzf = vz[fi] - G*dt
-            hs,_,_,_,_ = pl.surf_at(xf, yf, t_new)
-            pen = zf < hs; ok = fi[~pen]
-            x[ok] = xf[~pen]; y[ok] = yf[~pen]; z[ok] = zf[~pen]; vz[ok] = vzf[~pen]
-            if pen.any():
-                idx = fi[pen]
-                t0 = np.full(idx.size, t); t1 = np.full(idx.size, t_new)
-                for _ in range(p.bisect_iters):
-                    tm = 0.5*(t0+t1); ddt = tm - t
-                    xm = x[idx] + vx[idx]*ddt; ym = y[idx] + vy[idx]*ddt
-                    zm = z[idx] + vz[idx]*ddt - 0.5*G*ddt*ddt
-                    hm,_,_,_,_ = pl.surf_at(xm, ym, tm)
-                    below = zm < hm
-                    t1 = np.where(below, tm, t1); t0 = np.where(below, t0, tm)
-                tc = 0.5*(t0+t1); ddt = tc - t
-                xc = x[idx] + vx[idx]*ddt; yc = y[idx] + vy[idx]*ddt
-                vzc = vz[idx] - G*ddt
-                hc, hx, hy, uz, _wtt = pl.surf_at(xc, yc, tc)
-                nn = np.sqrt(hx*hx + hy*hy + 1.0)
-                nx_, ny_, nz_ = -hx/nn, -hy/nn, 1.0/nn
-                rvx, rvy, rvz = vx[idx], vy[idx], vzc - uz
-                vn = rvx*nx_ + rvy*ny_ + rvz*nz_
-                hit = vn < 0
-                rvx2 = rvx - (1+e)*vn*nx_; rvy2 = rvy - (1+e)*vn*ny_; rvz2 = rvz - (1+e)*vn*nz_
-                vn2 = rvx2*nx_ + rvy2*ny_ + rvz2*nz_
-                tx, ty, tz = rvx2-vn2*nx_, rvy2-vn2*ny_, rvz2-vn2*nz_
-                wi = idx[hit]
-                x[wi] = xc[hit]; y[wi] = yc[hit]; z[wi] = hc[hit] + 1e-9
-                vx[wi] = vn2[hit]*nx_[hit] + beta*tx[hit]
-                vy[wi] = vn2[hit]*ny_[hit] + beta*ty[hit]
-                vz[wi] = vn2[hit]*nz_[hit] + beta*tz[hit] + uz[hit]
-                self.n_bounce += int(hit.sum())
-                stick = hit & (np.abs(vn2) < v_stick)
-                si = idx[stick]; sitting[si] = True
-                vx[si] = 0.0; vy[si] = 0.0
-        sit = alive & sitting
-        if sit.any():
-            si = np.where(sit)[0]
-            hs, hx, hy, uz, wtt = pl.surf_at(x[si], y[si], t_new)
-            z[si] = hs
-            if p.c_roll > 0.0:
-                Nacc = np.maximum(G + wtt, 0.0)
-                vx[si] += -p.c_roll*Nacc*hx*dt; vy[si] += -p.c_roll*Nacc*hy*dt
-                sp = np.hypot(vx[si], vy[si]) + 1e-30
-                drag = np.minimum(p.c_rr*Nacc*dt, sp)
-                vx[si] -= drag*vx[si]/sp; vy[si] -= drag*vy[si]/sp
-                x[si] += vx[si]*dt; y[si] += vy[si]*dt
-            det = wtt < -G
-            di = si[det]; sitting[di] = False
-            vz[di] = uz[det]; z[di] = hs[det] + 1e-9
+        cur = np.full(st.pid.size, t)
+
+        def ballistic(idx, tau):
+            d = tau - cur[idx]
+            return (x[idx] + vx[idx]*d, y[idx] + vy[idx]*d,
+                    z[idx] + vz[idx]*d - 0.5*G*d*d, vz[idx] - G*d)
+
+        for _round in range(MAX_EVENT_ROUNDS):
+            # --- flying ---
+            fly = alive & ~sitting & (cur < t_new - 1e-15)
+            if fly.any():
+                fi_all = np.where(fly)[0]
+                # Conservative skip: ballistic minimum above the segment's
+                # surface-height bound => contact is impossible this round.
+                rem_all = t_new - cur[fi_all]
+                z_end = z[fi_all] + vz[fi_all]*rem_all - 0.5*G*rem_all*rem_all
+                z_min = np.minimum(z[fi_all], z_end)
+                tv = np.clip(vz[fi_all]/G, 0.0, rem_all)
+                z_min = np.minimum(z_min, z[fi_all] + vz[fi_all]*tv - 0.5*G*tv*tv)
+                safe = z_min > pl.h_bound
+                if safe.any():
+                    ok = fi_all[safe]
+                    xf, yf, zf, vzf = ballistic(ok, np.full(ok.size, t_new))
+                    x[ok] = xf; y[ok] = yf; z[ok] = zf; vz[ok] = vzf
+                    cur[ok] = t_new
+                fi = fi_all[~safe]
+                rem = t_new - cur[fi] if fi.size else rem_all[:0]
+                gaps = []
+                for k in range(1, CONTACT_SAMPLES + 1):
+                    tau = cur[fi] + rem*(k/CONTACT_SAMPLES)
+                    xs, ys, zs, _ = ballistic(fi, tau)
+                    hs,_,_,_,_ = pl.surf_at(xs, ys, tau)
+                    gaps.append(zs - hs)
+                gaps = np.stack(gaps)  # (S, n)
+                hit_any = (gaps <= 0).any(axis=0)
+                # no contact: ballistic to t_new
+                ok = fi[~hit_any]
+                if ok.size:
+                    xf, yf, zf, vzf = ballistic(ok, np.full(ok.size, t_new))
+                    x[ok] = xf; y[ok] = yf; z[ok] = zf; vz[ok] = vzf
+                    cur[ok] = t_new
+                if hit_any.any():
+                    idx = fi[hit_any]
+                    first = np.argmax(gaps[:, hit_any] <= 0, axis=0)  # 0-based sample idx
+                    rem_i = t_new - cur[idx]
+                    lo = cur[idx] + rem_i*(first/CONTACT_SAMPLES)
+                    hi = cur[idx] + rem_i*((first + 1)/CONTACT_SAMPLES)
+                    x0 = x[idx].copy(); y0 = y[idx].copy(); z0 = z[idx].copy()
+                    vx0 = vx[idx].copy(); vy0 = vy[idx].copy(); vz0 = vz[idx].copy()
+                    c0 = cur[idx].copy()
+                    for _ in range(EVENT_BISECT_ITERS):
+                        tm = 0.5*(lo + hi); d = tm - c0
+                        xm = x0 + vx0*d; ym = y0 + vy0*d
+                        zm = z0 + vz0*d - 0.5*G*d*d
+                        hm,_,_,_,_ = pl.surf_at(xm, ym, tm)
+                        below = zm <= hm
+                        hi = np.where(below, tm, hi); lo = np.where(below, lo, tm)
+                    tc = 0.5*(lo + hi); d = tc - c0
+                    xc = x0 + vx0*d; yc = y0 + vy0*d
+                    vzc = vz0 - G*d
+                    hc, hx, hy, uz, _w = pl.surf_at(xc, yc, tc)
+                    nn = np.sqrt(hx*hx + hy*hy + 1.0)
+                    nx_, ny_, nz_ = -hx/nn, -hy/nn, 1.0/nn
+                    rvx, rvy, rvz = vx0, vy0, vzc - uz
+                    vn = rvx*nx_ + rvy*ny_ + rvz*nz_
+                    hit = vn < 0
+                    rvx2 = rvx - (1+e)*vn*nx_; rvy2 = rvy - (1+e)*vn*ny_; rvz2 = rvz - (1+e)*vn*nz_
+                    vn2 = rvx2*nx_ + rvy2*ny_ + rvz2*nz_
+                    tx, ty, tz = rvx2-vn2*nx_, rvy2-vn2*ny_, rvz2-vn2*nz_
+                    wi = idx[hit]
+                    x[wi] = xc[hit]; y[wi] = yc[hit]; z[wi] = hc[hit] + 1e-9
+                    vx[wi] = vn2[hit]*nx_[hit] + beta*tx[hit]
+                    vy[wi] = vn2[hit]*ny_[hit] + beta*ty[hit]
+                    vz[wi] = vn2[hit]*nz_[hit] + beta*tz[hit] + uz[hit]
+                    cur[wi] = tc[hit]
+                    self.n_bounce += int(hit.sum())
+                    stick = hit & (np.abs(vn2) < v_stick)
+                    si = idx[stick]; sitting[si] = True
+                    if p.c_roll == 0.0:
+                        vx[si] = 0.0; vy[si] = 0.0
+                    # Non-hit (vn>=0 at tc): separating contact; place at tc state.
+                    nh = idx[~hit]
+                    if nh.size:
+                        x[nh] = xc[~hit]; y[nh] = yc[~hit]
+                        z[nh] = hc[~hit] + 1e-9; vz[nh] = vzc[~hit]
+                        cur[nh] = tc[~hit]
+            # --- sitting ---
+            sit = alive & sitting & (cur < t_new - 1e-15)
+            if sit.any():
+                si = np.where(sit)[0]
+                if p.c_roll > 0.0:
+                    # Legacy whole-step rolling (documented floor for c_roll>0).
+                    hs, hx, hy, uz, wtt = pl.surf_at(x[si], y[si], t_new)
+                    z[si] = hs
+                    Nacc = np.maximum(G + wtt, 0.0)
+                    vx[si] += -p.c_roll*Nacc*hx*dt; vy[si] += -p.c_roll*Nacc*hy*dt
+                    sp = np.hypot(vx[si], vy[si]) + 1e-30
+                    drag = np.minimum(p.c_rr*Nacc*dt, sp)
+                    vx[si] -= drag*vx[si]/sp; vy[si] -= drag*vy[si]/sp
+                    x[si] += vx[si]*dt; y[si] += vy[si]*dt
+                    det = wtt < -G
+                    di = si[det]; sitting[di] = False
+                    vz[di] = uz[det]; z[di] = hs[det] + 1e-9
+                    cur[si] = t_new
+                else:
+                    _,_,_,_, w0 = pl.surf_at(x[si], y[si], cur[si])
+                    hs1,_,_,_, w1 = pl.surf_at(x[si], y[si], np.full(si.size, t_new))
+                    det_now = w0 < -G
+                    det_later = (~det_now) & (w1 < -G)
+                    stay = ~(det_now | det_later)
+                    if stay.any():
+                        sj = si[stay]; z[sj] = hs1[stay]; cur[sj] = t_new
+                    det = det_now | det_later
+                    if det.any():
+                        dj = si[det]
+                        w0d, w1d = w0[det], w1[det]
+                        frac = np.where(w1d != w0d, (-G - w0d)/np.where(w1d != w0d, w1d - w0d, 1.0), 0.0)
+                        frac = np.clip(frac, 0.0, 1.0)
+                        frac = np.where(det_now[det], 0.0, frac)
+                        td = cur[dj] + frac*(t_new - cur[dj])
+                        hd,_,_, uzd, _ = pl.surf_at(x[dj], y[dj], td)
+                        sitting[dj] = False
+                        z[dj] = hd + 1e-9; vz[dj] = uzd
+                        cur[dj] = td
+                        self.n_detach += int(dj.size)
+                        if dj.size:
+                            self.last_detach_t = float(td[0])
+            if not ((alive & (cur < t_new - 1e-15)).any()):
+                break
+        # Fallback after the event cap: repeated inelastic micro-bounces
+        # accumulate in finite time (inelastic collapse); the physical limit
+        # is contact. Seat remaining flying particles on the surface for the
+        # rest of the step (documented regularization, counted in n_event_cap)
+        # instead of ballistically penetrating the plate.
+        left = alive & (cur < t_new - 1e-15)
+        if left.any():
+            li = np.where(left)[0]
+            self.n_event_cap += int(li.size)
+            hs,_,_, uzl, _ = pl.surf_at(x[li], y[li], t_new)
+            z[li] = hs; vz[li] = uzl
+            sitting[li] = True
+            if p.c_roll == 0.0:
+                vx[li] = 0.0; vy[li] = 0.0
+            cur[li] = t_new
         off = alive & (np.hypot(x, y) > pl.basis["a"])
         alive[off] = False
         self.t = t_new
 
     def advance_to(self, t_target):
+        """Advance to EXACTLY t_target (final step shortened; never overshoots)."""
         while self.t < t_target - 1e-15:
-            self.step()
+            self.step(min(self.dt_now(), t_target - self.t))
