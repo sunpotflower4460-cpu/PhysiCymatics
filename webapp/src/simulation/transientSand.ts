@@ -29,7 +29,14 @@ export const SLEEP_WINDOW_S = 0.5
 export const SLEEP_ACCEL_MARGIN = 0.01 // m/s^2
 export const SLEEP_HEIGHT_MARGIN = 1e-6 // m
 
-export interface SleepOptions { enabled: boolean }
+export interface SleepOptions {
+  enabled: boolean
+  /** M6-3A event scheduler (active set + wake heap); default on when enabled.
+   *  false keeps the M6-2 full-scan loop for comparison. */
+  scheduler?: boolean
+  /** M6-3B region-shared sitting-sleep evaluation; default on when enabled. */
+  regions?: boolean
+}
 
 export class TransientSandSim {
   t = 0
@@ -46,6 +53,29 @@ export class TransientSandSim {
   private nextEvalT: Float64Array
   private lookCache: { end: number; qMin: Float64Array; qMax: Float64Array; aMin: Float64Array; aMax: Float64Array } | null = null
   private phiBuf: Float64Array
+  // M6-3A scheduler state: active set (swap-remove list) + wake min-heap.
+  // Heap entries are validated against sleeping/wakeT, so stale entries
+  // (after wakeAll or rescheduling) can never cause a wrong wake.
+  private activeList: Int32Array
+  private activePos: Int32Array
+  private activeCount = 0
+  private heapT = new Float64Array(1024)
+  private heapI = new Int32Array(1024)
+  private heapSize = 0
+  private sleepingNow = 0
+  // M6-3B region sharing for SITTING sleep evaluation: exact per-cell Phi
+  // ranges (TransientPlate.cellPhiRanges) combined with the lookahead
+  // acceleration ranges give a cell-wide lower bound valid at every point
+  // of the cell. Inconclusive cells fall back to per-particle evaluation.
+  regionHits = 0
+  regionRejects = 0
+  regionChecks = 0
+  private static readonly GRID = 64
+  private cellPhiLo: Float64Array | null = null
+  private cellPhiHi: Float64Array | null = null
+  private cellLb: Float64Array | null = null
+  private cellLbHi: Float64Array | null = null
+  private cellLbFor: object | null = null
   constructor(
     readonly plate: TransientPlate,
     readonly state: ParticleState,
@@ -58,6 +88,119 @@ export class TransientSandSim {
     this.sleepT0 = new Float64Array(n)
     this.nextEvalT = new Float64Array(n)
     this.phiBuf = new Float64Array(plate.ndof)
+    this.activeList = new Int32Array(n)
+    this.activePos = new Int32Array(n)
+    for (let i = 0; i < n; i++) { this.activeList[i] = i; this.activePos[i] = i }
+    this.activeCount = n
+    if (this.useRegions()) this.initRegions()
+  }
+
+  private useRegions(): boolean { return this.sleep.enabled && this.sleep.regions !== false }
+
+  private initRegions(): void {
+    const G = TransientSandSim.GRID; const a = this.plate.a; const nd = this.plate.ndof
+    const w = (2 * a) / G
+    this.cellPhiLo = new Float64Array(G * G * nd)
+    this.cellPhiHi = new Float64Array(G * G * nd)
+    this.cellLb = new Float64Array(G * G)
+    this.cellLbHi = new Float64Array(G * G)
+    const lo = new Float64Array(nd); const hi = new Float64Array(nd)
+    for (let gy = 0; gy < G; gy++) {
+      for (let gx = 0; gx < G; gx++) {
+        this.plate.cellPhiRanges(-a + gx * w, -a + (gx + 1) * w, -a + gy * w, -a + (gy + 1) * w, lo, hi)
+        const base = (gy * G + gx) * nd
+        this.cellPhiLo.set(lo, base)
+        this.cellPhiHi.set(hi, base)
+      }
+    }
+  }
+
+  /** Cell-wide wtt lower bounds for the current lookahead cache (once). */
+  private ensureCellLb(): void {
+    const lc = this.lookCache!
+    if (this.cellLbFor === lc) return
+    this.cellLbFor = lc
+    const G = TransientSandSim.GRID; const nd = this.plate.ndof
+    const loA = this.cellPhiLo!; const hiA = this.cellPhiHi!; const out = this.cellLb!
+    const outHi = this.cellLbHi!
+    for (let c = 0; c < G * G; c++) {
+      let lb = 0; let ub = 0
+      const base = c * nd
+      for (let j = 0; j < nd; j++) {
+        const plo = loA[base + j]; const phi = hiA[base + j]
+        const a0 = lc.aMin[j]; const a1 = lc.aMax[j]
+        lb += Math.min(plo * a0, plo * a1, phi * a0, phi * a1)
+        // Upper bound on the exact per-particle term min(phi*a0, phi*a1)
+        // for phi in [plo, phi]: the term is piecewise linear in phi with
+        // a kink at 0, so its max is at an endpoint or at 0.
+        const g = (v: number) => Math.min(v * a0, v * a1)
+        ub += Math.max(g(plo), g(phi), plo <= 0 && 0 <= phi ? 0 : -Infinity)
+      }
+      out[c] = lb
+      outHi[c] = ub
+    }
+  }
+
+  private cellIndex(x: number, y: number): number {
+    const G = TransientSandSim.GRID; const a = this.plate.a
+    const gx = Math.min(G - 1, Math.max(0, Math.floor(((x + a) / (2 * a)) * G)))
+    const gy = Math.min(G - 1, Math.max(0, Math.floor(((y + a) / (2 * a)) * G)))
+    return gy * G + gx
+  }
+
+  private useScheduler(): boolean { return this.sleep.enabled && this.sleep.scheduler !== false }
+
+  private setSleeping(i: number, v: 0 | 1): void {
+    if (this.sleeping[i] !== v) { this.sleeping[i] = v; this.sleepingNow += v ? 1 : -1 }
+  }
+
+  private addActive(i: number): void {
+    this.activeList[this.activeCount] = i
+    this.activePos[i] = this.activeCount++
+  }
+
+  private removeActiveAt(idx: number): void {
+    const removed = this.activeList[idx]
+    const last = this.activeList[--this.activeCount]
+    this.activeList[idx] = last
+    this.activePos[last] = idx
+    this.activePos[removed] = -1
+  }
+
+  private heapPush(t: number, i: number): void {
+    if (this.heapSize === this.heapT.length) {
+      const nt = new Float64Array(this.heapT.length * 2); nt.set(this.heapT); this.heapT = nt
+      const ni = new Int32Array(this.heapI.length * 2); ni.set(this.heapI); this.heapI = ni
+    }
+    let c = this.heapSize++
+    this.heapT[c] = t; this.heapI[c] = i
+    while (c > 0) {
+      const par = (c - 1) >> 1
+      if (this.heapT[par] <= this.heapT[c]) break
+      const tt = this.heapT[par]; this.heapT[par] = this.heapT[c]; this.heapT[c] = tt
+      const ti = this.heapI[par]; this.heapI[par] = this.heapI[c]; this.heapI[c] = ti
+      c = par
+    }
+  }
+
+  private heapPop(): [number, number] {
+    const t = this.heapT[0]; const i = this.heapI[0]
+    const last = --this.heapSize
+    if (last > 0) {
+      this.heapT[0] = this.heapT[last]; this.heapI[0] = this.heapI[last]
+      let c = 0
+      for (;;) {
+        const l = 2 * c + 1; const r = l + 1
+        let m = c
+        if (l < last && this.heapT[l] < this.heapT[m]) m = l
+        if (r < last && this.heapT[r] < this.heapT[m]) m = r
+        if (m === c) break
+        const tt = this.heapT[m]; this.heapT[m] = this.heapT[c]; this.heapT[c] = tt
+        const ti = this.heapI[m]; this.heapI[m] = this.heapI[c]; this.heapI[c] = ti
+        c = m
+      }
+    }
+    return [t, i]
   }
 
   /** Invalidate all sleep schedules (input change). State itself is kept;
@@ -67,9 +210,16 @@ export class TransientSandSim {
     for (let i = 0; i < st.id.length; i++) {
       if (!this.sleeping[i]) continue
       this.materialize(i, this.t)
-      this.sleeping[i] = 0
+      this.setSleeping(i, 0)
     }
     this.lookCache = null
+    // Scheduler: every schedule is void; all living particles are active.
+    this.heapSize = 0
+    this.activeCount = 0
+    for (let i = 0; i < st.id.length; i++) {
+      this.activePos[i] = -1
+      if (st.alive[i]) this.addActive(i)
+    }
   }
 
   private ensureLookahead(fromT: number): void {
@@ -128,6 +278,24 @@ export class TransientSandSim {
     this.sleepEvaluations++
     this.ensureLookahead(tNew)
     const lc = this.lookCache!
+    if (this.cellLb) {
+      // Region shortcut: the cell bound holds at every point of the cell,
+      // so a safe cell bound proves this particle safe without phiAll.
+      this.regionChecks++
+      this.ensureCellLb()
+      const cell = this.cellIndex(st.x[i], st.y[i])
+      // Certain-fail shortcut: even the best exact bound in this cell
+      // cannot reach the margin, so the exact evaluation would fail too.
+      if (G + this.cellLbHi![cell] < SLEEP_ACCEL_MARGIN) { this.regionRejects++; return }
+      const clb = this.cellLb[cell]
+      if (G + clb >= SLEEP_ACCEL_MARGIN && lc.end > tNew + 8 * this.dtNow()) {
+        this.regionHits++
+        this.setSleeping(i, 1)
+        this.wakeT[i] = lc.end
+        this.sleepT0[i] = tNew
+        return
+      }
+    }
     pl.phiAll(st.x[i], st.y[i], this.phiBuf)
     // Exact lower bound of Hermite wtt over the lookahead window.
     let lb = 0
@@ -137,7 +305,7 @@ export class TransientSandSim {
     }
     if (G + lb < SLEEP_ACCEL_MARGIN) return
     if (!(lc.end > tNew + 8 * this.dtNow())) return
-    this.sleeping[i] = 1
+    this.setSleeping(i, 1)
     this.wakeT[i] = lc.end
     this.sleepT0[i] = tNew
   }
@@ -179,7 +347,7 @@ export class TransientSandSim {
       }
     }
     if (!(wake > tNew + 8 * this.dtNow())) return
-    this.sleeping[i] = 1
+    this.setSleeping(i, 1)
     this.wakeT[i] = wake
     this.sleepT0[i] = tNew
   }
@@ -199,22 +367,66 @@ export class TransientSandSim {
     // Resolution limit, not an event-count rule.
     const vStick = Math.max(p.vStickFrac * pl.vScale(), Math.sqrt(2 * G * 9e-9))
     const n = st.id.length
-    for (let i = 0; i < n; i++) {
-      if (!st.alive[i]) continue
-      let cur = t
-      if (this.sleeping[i]) {
-        if (this.wakeT[i] > tNew) { this.skippedUpdates++; continue }
-        // Wake at the STEP START (<= wakeT, still inside the guaranteed
-        // interval) so this step is processed exactly as the baseline.
-        this.sleeping[i] = 0; this.wakeCount++
-        cur = t
-        if (st.sitting[i]) {
-          pl.surfAt(st.x[i], st.y[i], t, S5); st.z[i] = S5[0]
-        } else {
-          this.materialize(i, t)
+    if (this.useScheduler()) {
+      this.stepScheduled(t, tNew, dt, vStick, customDt)
+    } else {
+      // M6-2 legacy path: full scan every step (kept for comparison).
+      for (let i = 0; i < n; i++) {
+        if (!st.alive[i]) continue
+        if (this.sleeping[i]) {
+          if (this.wakeT[i] > tNew) { this.skippedUpdates++; continue }
+          // Wake at the STEP START (<= wakeT, still inside the guaranteed
+          // interval) so this step is processed exactly as the baseline.
+          this.setSleeping(i, 0); this.wakeCount++
+          if (st.sitting[i]) {
+            pl.surfAt(st.x[i], st.y[i], t, S5); st.z[i] = S5[0]
+          } else {
+            this.materialize(i, t)
+          }
         }
+        this.advanceParticle(i, t, tNew, dt, vStick, customDt)
       }
-      let rounds = 0
+      for (let i = 0; i < n; i++) {
+        if (st.alive[i] && Math.hypot(st.x[i], st.y[i]) > pl.a) { st.alive[i] = 0; this.setSleeping(i, 0) }
+      }
+    }
+    this.t = tNew
+  }
+
+  // M6-3A: only active particles are touched; due sleepers are woken from
+  // the heap at the step start with exactly the legacy wake semantics
+  // (wake when wakeT <= tNew, materialized at the step-start time).
+  private stepScheduled(t: number, tNew: number, dt: number, vStick: number, customDt: boolean): void {
+    const { plate: pl, state: st } = this
+    while (this.heapSize > 0 && this.heapT[0] <= tNew) {
+      const [wt, i] = this.heapPop()
+      if (!this.sleeping[i] || this.wakeT[i] !== wt || !st.alive[i]) continue // stale entry
+      this.setSleeping(i, 0); this.wakeCount++
+      if (st.sitting[i]) {
+        pl.surfAt(st.x[i], st.y[i], t, S5); st.z[i] = S5[0]
+      } else {
+        this.materialize(i, t)
+      }
+      this.addActive(i)
+    }
+    this.skippedUpdates += this.sleepingNow
+    for (let idx = 0; idx < this.activeCount;) {
+      const i = this.activeList[idx]
+      if (!st.alive[i]) { this.removeActiveAt(idx); continue }
+      this.advanceParticle(i, t, tNew, dt, vStick, customDt)
+      if (st.alive[i] && Math.hypot(st.x[i], st.y[i]) > pl.a) { st.alive[i] = 0; this.setSleeping(i, 0) }
+      if (!st.alive[i]) { this.removeActiveAt(idx); continue }
+      if (this.sleeping[i]) { this.heapPush(this.wakeT[i], i); this.removeActiveAt(idx); continue }
+      idx++
+    }
+  }
+
+  /** Advance one awake particle from t to tNew (events, fallback, sleep
+   *  evaluation). Shared verbatim by the legacy scan and the scheduler. */
+  private advanceParticle(i: number, t: number, tNew: number, dt: number, vStick: number, customDt: boolean): void {
+    const { plate: pl, state: st, p } = this
+    let cur = t
+    let rounds = 0
       while (cur < tNew - 1e-15 && rounds < MAX_EVENT_ROUNDS) {
         rounds++
         if (st.sitting[i]) {
@@ -359,11 +571,6 @@ export class TransientSandSim {
         // particle simply stays on the baseline path meanwhile).
         if (!this.sleeping[i]) this.nextEvalT[i] = tNew + 16 * dt
       }
-    }
-    for (let i = 0; i < n; i++) {
-      if (st.alive[i] && Math.hypot(st.x[i], st.y[i]) > pl.a) { st.alive[i] = 0; this.sleeping[i] = 0 }
-    }
-    this.t = tNew
   }
 
   /** Bring sleeping particles' stored state to the current time
@@ -419,7 +626,71 @@ export class TransientSandSim {
     }
     return { t: this.t, xy, aliveCount: k / 2, initialCount: st.id.length, stats: this.stats(stepsPerSec) }
   }
+
+  // M6-3C differential frame for display transfer. Particle identity is
+  // the state-array index (stable for the life of the sim). The first
+  // call (and any call after resetFrameDelta) sends every living slot;
+  // later calls send only slots whose DISPLAY xy changed since the last
+  // frame, plus slots that died. Display xy here is exactly snapshot()'s
+  // (analytic for sleeping flyers, stored xy otherwise) at the same
+  // physics time — display optimization never touches physical state.
+  // Sitting particles (sleeping or not) keep constant xy, so formed
+  // patterns mostly stop being resent.
+  private prevSentXy: Float32Array | null = null
+  private prevSentAlive: Uint8Array | null = null
+  private frameFirst = true
+  private deltaIdx: Int32Array | null = null
+  private deltaDead: Int32Array | null = null
+
+  resetFrameDelta(): void {
+    this.prevSentXy = null; this.prevSentAlive = null; this.frameFirst = true
+  }
+
+  frameDelta(stepsPerSec = 0) {
+    const st = this.state
+    const n = st.id.length
+    if (!this.prevSentXy) {
+      this.prevSentXy = new Float32Array(n * 2).fill(NaN)
+      this.prevSentAlive = new Uint8Array(n)
+      this.deltaIdx = new Int32Array(n)
+      this.deltaDead = new Int32Array(n)
+    }
+    const prev = this.prevSentXy; const prevAlive = this.prevSentAlive!
+    const idxBuf = this.deltaIdx!; const deadBuf = this.deltaDead!
+    const full = this.frameFirst
+    this.frameFirst = false
+    let nIdx = 0; let nDead = 0; let aliveCount = 0
+    for (let i = 0; i < n; i++) {
+      if (st.alive[i]) {
+        aliveCount++
+        let x: number; let y: number
+        if (this.sleeping[i] && !st.sitting[i]) {
+          const d = this.t - this.sleepT0[i]
+          x = st.x[i] + st.vx[i] * d; y = st.y[i] + st.vy[i] * d
+        } else { x = st.x[i]; y = st.y[i] }
+        const fx = Math.fround(x); const fy = Math.fround(y)
+        if (!prevAlive[i] || prev[2 * i] !== fx || prev[2 * i + 1] !== fy) {
+          idxBuf[nIdx++] = i
+          prev[2 * i] = fx; prev[2 * i + 1] = fy
+        }
+        prevAlive[i] = 1
+      } else if (prevAlive[i]) {
+        deadBuf[nDead++] = i
+        prevAlive[i] = 0
+      }
+    }
+    const xy = new Float32Array(nIdx * 2)
+    for (let k = 0; k < nIdx; k++) {
+      xy[2 * k] = prev[2 * idxBuf[k]]; xy[2 * k + 1] = prev[2 * idxBuf[k] + 1]
+    }
+    return {
+      t: this.t, full, idx: idxBuf.slice(0, nIdx), xy, dead: deadBuf.slice(0, nDead),
+      aliveCount, initialCount: n, stats: this.stats(stepsPerSec),
+    }
+  }
 }
+
+export type TransientFrame = ReturnType<TransientSandSim['frameDelta']>
 
 export function createTransientSim(
   score: PerformanceScore, count: number, seed: number, driveXY: [number, number] = [0, 0],

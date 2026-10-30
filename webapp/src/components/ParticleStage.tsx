@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Pause, Play, RotateCcw } from 'lucide-react'
-import { drawParticles } from '../rendering/particleRenderer'
+import { drawParticles, drawFrameCache, FrameCache } from '../rendering/particleRenderer'
 import type { SandSnapshot } from '../simulation/types'
 import type { TransientStats } from '../simulation/transientSand'
 import { calibratedForceN } from '../simulation/transientSand'
@@ -31,6 +31,7 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const workerRef = useRef<Worker | null>(null)
   const audioRef = useRef<ScoreStreamAudio | null>(null)
+  const frameCacheRef = useRef(new FrameCache())
   const [mode, setMode] = useState<'single' | 'perf'>('single')
   const [playing, setPlaying] = useState(false)
   const [count, setCount] = useState(500)
@@ -48,6 +49,14 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
     workerRef.current = wk
     wk.onmessage = (ev: MessageEvent) => {
       if (ev.data.type === 'snapshot') { setKind(ev.data.kind); setSnap(ev.data.snap) }
+      else if (ev.data.type === 'frame') {
+        // Differential frame (transient): update the display cache, then
+        // publish only the small header (time/counts/stats) as state.
+        frameCacheRef.current.apply(ev.data.frame)
+        const f = ev.data.frame
+        setKind('transient')
+        setSnap({ t: f.t, xy: frameCacheRef.current.xy, aliveCount: f.aliveCount, initialCount: f.initialCount, stats: f.stats as never })
+      }
       else if (ev.data.type === 'error') { setError(String(ev.data.message)); setPlaying(false) }
     }
     wk.onerror = () => { setError('Workerでエラーが起きました'); setPlaying(false) }
@@ -58,9 +67,10 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
 
   useEffect(() => {
     if (snap && canvasRef.current) {
-      drawParticles(canvasRef.current, snap as unknown as SandSnapshot, PLATE_A)
+      if (kind === 'transient') drawFrameCache(canvasRef.current, frameCacheRef.current, PLATE_A)
+      else drawParticles(canvasRef.current, snap as unknown as SandSnapshot, PLATE_A)
     }
-  }, [snap])
+  }, [snap, kind])
 
   // Keep audio from running ahead of lagging physics (score time = physics t here).
   useEffect(() => {

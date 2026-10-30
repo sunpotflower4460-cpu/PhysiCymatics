@@ -106,6 +106,68 @@ export class TransientPlate {
     for (let j = 0; j < this.ndof; j++) out[j] = Math.hypot(qd[j], this.omega[j] * q[j])
   }
 
+  /** Exact per-DOF Phi ranges over an axis-aligned rectangle, for the
+   *  AS-IMPLEMENTED Phi: Phi_j(x,y) = R_j[bin(r)] * trig_m(theta) with the
+   *  same radial binning as phiAll/surfAt. r-range gives a bin range
+   *  (R min/max over those bins); theta-range gives the exact trig range
+   *  (endpoints + interior extrema). The interval product therefore
+   *  contains Phi_j at EVERY point of the rectangle — no representative
+   *  point, no sampling. M6-3B region-shared sleep bounds use this. */
+  cellPhiRanges(x0: number, x1: number, y0: number, y1: number,
+                outLo: Float64Array, outHi: Float64Array): void {
+    const containsOrigin = x0 <= 0 && 0 <= x1 && y0 <= 0 && 0 <= y1
+    const dx = x0 > 0 ? x0 : x1 < 0 ? -x1 : 0
+    const dy = y0 > 0 ? y0 : y1 < 0 ? -y1 : 0
+    const rLo = Math.hypot(dx, dy)
+    const rHi = Math.max(
+      Math.hypot(x0, y0), Math.hypot(x0, y1), Math.hypot(x1, y0), Math.hypot(x1, y1))
+    const bLo = Math.min(Math.floor(rLo * (this.ng1 / this.a)), this.ng1)
+    const bHi = Math.min(Math.floor(rHi * (this.ng1 / this.a)), this.ng1)
+    // Covering angular arc of the rectangle (theta is monotonic along
+    // each edge, so corner angles suffice when origin is outside).
+    let thLo = 0; let thHi = 0
+    if (!containsOrigin) {
+      const angs = [Math.atan2(y0, x0), Math.atan2(y0, x1), Math.atan2(y1, x0), Math.atan2(y1, x1)]
+        .sort((u, v) => u - v)
+      let bestGap = -1; let start = angs[0]
+      for (let k = 0; k < 4; k++) {
+        const nxt = k < 3 ? angs[k + 1] : angs[0] + 2 * Math.PI
+        const gap = nxt - angs[k]
+        if (gap > bestGap) { bestGap = gap; start = nxt }
+      }
+      thLo = start; thHi = start + (2 * Math.PI - bestGap)
+    }
+    const trigRange = (m: number, kind: 'cos' | 'sin'): [number, number] => {
+      if (containsOrigin || m === 0) return kind === 'cos' || m === 0 ? (m === 0 ? [1, 1] : [-1, 1]) : [-1, 1]
+      const f = kind === 'cos' ? Math.cos : Math.sin
+      let lo = Math.min(f(m * thLo), f(m * thHi)); let hi = Math.max(f(m * thLo), f(m * thHi))
+      // Interior extrema: cos(m t) at m t = k*pi; sin(m t) at m t = pi/2 + k*pi.
+      const off = kind === 'cos' ? 0 : Math.PI / 2
+      const kLo = Math.ceil((m * thLo - off) / Math.PI)
+      const kHi = Math.floor((m * thHi - off) / Math.PI)
+      for (let k = kLo; k <= kHi; k++) {
+        const v = f(off + k * Math.PI)
+        if (v < lo) lo = v
+        if (v > hi) hi = v
+      }
+      return [lo, hi]
+    }
+    for (let j = 0; j < this.ndof; j++) {
+      const d = this.dofs[j]; const md = this.modes[d.mode]
+      let rMin = Infinity; let rMax = -Infinity
+      const R = this.R[d.mode]
+      for (let b = bLo; b <= bHi; b++) {
+        if (R[b] < rMin) rMin = R[b]
+        if (R[b] > rMax) rMax = R[b]
+      }
+      if (md.m === 0) { outLo[j] = rMin; outHi[j] = rMax; continue }
+      const [tLo, tHi] = trigRange(md.m, d.kind)
+      const p1 = rMin * tLo; const p2 = rMin * tHi; const p3 = rMax * tLo; const p4 = rMax * tHi
+      outLo[j] = Math.min(p1, p2, p3, p4)
+      outHi[j] = Math.max(p1, p2, p3, p4)
+    }
+  }
+
   /** All DOF shape values Phi_j(x, y) (no gradients). */
   phiAll(x: number, y: number, out: Float64Array): void {
     const r = Math.hypot(x, y)
