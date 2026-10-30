@@ -24,8 +24,10 @@ export const MAX_EVENT_ROUNDS = 8
 // Bounds are derived in docs/m6_2_event_driven_design.md; margins cover
 // integration error of the modal RK4 (validated empirically vs baseline).
 export const SLEEP_WINDOW_S = 0.5
-export const SLEEP_ACCEL_MARGIN = 0.25 // m/s^2
-export const SLEEP_HEIGHT_MARGIN = 2e-5 // m
+// Lookahead ranges are exact for the RK4+Hermite scheme; margin only
+// covers floating-point rounding in the range computation itself.
+export const SLEEP_ACCEL_MARGIN = 0.01 // m/s^2
+export const SLEEP_HEIGHT_MARGIN = 1e-6 // m
 
 export interface SleepOptions { enabled: boolean }
 
@@ -42,9 +44,8 @@ export class TransientSandSim {
   readonly wakeT: Float64Array
   readonly sleepT0: Float64Array
   private nextEvalT: Float64Array
+  private lookCache: { end: number; qMin: Float64Array; qMax: Float64Array; aMin: Float64Array; aMax: Float64Array } | null = null
   private phiBuf: Float64Array
-  private energyBuf: Float64Array
-  private forceBuf: Float64Array
   constructor(
     readonly plate: TransientPlate,
     readonly state: ParticleState,
@@ -57,8 +58,6 @@ export class TransientSandSim {
     this.sleepT0 = new Float64Array(n)
     this.nextEvalT = new Float64Array(n)
     this.phiBuf = new Float64Array(plate.ndof)
-    this.energyBuf = new Float64Array(plate.ndof)
-    this.forceBuf = plate.forceBounds()
   }
 
   /** Invalidate all sleep schedules (input change). State itself is kept;
@@ -70,6 +69,24 @@ export class TransientSandSim {
       this.materialize(i, this.t)
       this.sleeping[i] = 0
     }
+    this.lookCache = null
+  }
+
+  private ensureLookahead(fromT: number): void {
+    if (this.lookCache && fromT < this.lookCache.end - SLEEP_WINDOW_S * 0.5) return
+    const pl = this.plate
+    const dtAt = (t: number): number => {
+      const ts = pl.scoreTime(t)
+      const f = pl.signal.freqAt(ts) ?? pl.signal.freqAt(ts + 1e-9) ?? 152
+      return 1 / (this.p.spp * Math.max(f, 20))
+    }
+    this.lookCache = pl.lookaheadRanges(fromT, SLEEP_WINDOW_S, dtAt)
+  }
+
+  private nominalDtAt(tAbs: number): number {
+    const ts = this.plate.scoreTime(tAbs)
+    const f = this.plate.signal.freqAt(ts) ?? this.plate.signal.freqAt(ts + 1e-9) ?? 152
+    return 1 / (this.p.spp * Math.max(f, 20))
   }
 
   private materialize(i: number, tAbs: number): void {
@@ -78,16 +95,22 @@ export class TransientSandSim {
       // z is restored by the caller via surfAt when a segment is active.
       return
     }
-    const d = tAbs - this.sleepT0[i]
-    if (d <= 0) return
-    st.x[i] += st.vx[i] * d; st.y[i] += st.vy[i] * d
-    st.z[i] += st.vz[i] * d - 0.5 * G * d * d; st.vz[i] -= G * d
-    this.sleepT0[i] = tAbs
+    // Replay the ballistic updates in nominal-dt chunks so floating-point
+    // accumulation matches the baseline stepwise path.
+    while (this.sleepT0[i] < tAbs - 1e-15) {
+      const d = Math.min(this.nominalDtAt(this.sleepT0[i]), tAbs - this.sleepT0[i])
+      st.x[i] += st.vx[i] * d; st.y[i] += st.vy[i] * d
+      st.z[i] += st.vz[i] * d - 0.5 * G * d * d; st.vz[i] -= G * d
+      this.sleepT0[i] += d
+    }
   }
 
   get nSleeping(): number { let s = 0; for (const v of this.sleeping) s += v; return s }
 
-  refreshForceBounds(): void { this.forceBuf = this.plate.forceBounds() }
+  // M6-2R: sleep bounds come from the lookahead cache, not force bounds.
+  // Kept for worker API compatibility; invalidates the lookahead cache so
+  // changed drive conditions are re-looked-ahead (callers also wakeAll()).
+  refreshForceBounds(): void { this.lookCache = null }
 
   get nAlive(): number { let s = 0; for (const v of this.state.alive) s += v; return s }
 
@@ -98,43 +121,44 @@ export class TransientSandSim {
   }
 
   private trySleepSitting(i: number, tNew: number): void {
+    // Rolling (cRoll>0) moves seated particles horizontally: never sleep
+    // them on a vertical-acceleration argument alone (Codex #4410299745).
+    if (this.p.cRoll > 0) return
     const pl = this.plate; const st = this.state
     this.sleepEvaluations++
+    this.ensureLookahead(tNew)
+    const lc = this.lookCache!
     pl.phiAll(st.x[i], st.y[i], this.phiBuf)
-    let s0 = 0; let s1 = 0
-    const k = 1 + 2 * pl.zeta
+    // Exact lower bound of Hermite wtt over the lookahead window.
+    let lb = 0
     for (let j = 0; j < pl.ndof; j++) {
-      const aPhi = Math.abs(this.phiBuf[j])
-      const wE = pl.omega[j] * k
-      s0 += (this.forceBuf[j] + wE * this.energyBuf[j]) * aPhi
-      s1 += wE * this.forceBuf[j] * aPhi
+      const phi = this.phiBuf[j]
+      lb += Math.min(phi * lc.aMin[j], phi * lc.aMax[j])
     }
-    if (G - s0 <= SLEEP_ACCEL_MARGIN) return
-    const delta = s1 > 0 ? Math.min((G - SLEEP_ACCEL_MARGIN - s0) / s1, SLEEP_WINDOW_S) : SLEEP_WINDOW_S
-    // Too-short sleeps cost more to manage than they save.
-    if (!(delta > 8 * this.dtNow())) return
+    if (G + lb < SLEEP_ACCEL_MARGIN) return
+    if (!(lc.end > tNew + 8 * this.dtNow())) return
     this.sleeping[i] = 1
-    this.wakeT[i] = tNew + delta
+    this.wakeT[i] = lc.end
     this.sleepT0[i] = tNew
   }
 
   private trySleepFlying(i: number, tNew: number): void {
     const pl = this.plate; const st = this.state
     this.sleepEvaluations++
+    this.ensureLookahead(tNew)
+    const lc = this.lookCache!
     const z0 = st.z[i]; const vz0 = st.vz[i]
-    let hBase = 0; let hRate = 0
-    for (let j = 0; j < pl.ndof; j++) {
-      hBase += this.energyBuf[j] / pl.omega[j]
-      hRate += this.forceBuf[j] / pl.omega[j]
-    }
+    // Exact Hermite height bound over the window: |h| <= sum max|q_j|.
+    let hBoundW = 0
+    for (let j = 0; j < pl.ndof; j++) hBoundW += Math.max(Math.abs(lc.qMin[j]), Math.abs(lc.qMax[j]))
     const safe = (d: number): boolean => {
       const zEnd = z0 + vz0 * d - 0.5 * G * d * d
       const tv = Math.min(Math.max(vz0 / G, 0), d)
       const zMin = Math.min(z0, zEnd, z0 + vz0 * tv - 0.5 * G * tv * tv)
-      return zMin > hBase + hRate * d + SLEEP_HEIGHT_MARGIN
+      return zMin > hBoundW + SLEEP_HEIGHT_MARGIN
     }
     if (!safe(0)) return
-    let lo = 0; let hi = SLEEP_WINDOW_S
+    let lo = 0; let hi = Math.min(SLEEP_WINDOW_S, lc.end - tNew)
     if (!safe(hi)) {
       for (let k = 0; k < 40; k++) {
         const mid = 0.5 * (lo + hi)
@@ -162,24 +186,33 @@ export class TransientSandSim {
 
   step(dtIn?: number): void {
     const { plate: pl, state: st, p } = this
-    const dt = dtIn ?? this.dtNow(); const t = this.t; const tNew = t + dt
+    // Lookahead ranges assume the nominal dt sequence; a non-nominal dt
+    // breaks segment alignment, so wake everything and skip sleep.
+    const nominalDt = this.dtNow()
+    const customDt = dtIn !== undefined && Math.abs(dtIn - nominalDt) > 1e-12 * nominalDt
+    if (customDt && this.sleep.enabled) this.wakeAll()
+    const dt = dtIn ?? nominalDt; const t = this.t; const tNew = t + dt
     pl.beginStep(t, tNew)
-    if (this.sleep.enabled) pl.energyPerDof(this.energyBuf)
-    const vStick = p.vStickFrac * pl.vScale()
+    // Inelastic-collapse regularization: contacts place at h+1e-9 m; a
+    // rebound apex below 1e-8 m above the surface is unresolvable and
+    // sustains a numerical limit cycle; stick floor sqrt(2*g*9e-9).
+    // Resolution limit, not an event-count rule.
+    const vStick = Math.max(p.vStickFrac * pl.vScale(), Math.sqrt(2 * G * 9e-9))
     const n = st.id.length
     for (let i = 0; i < n; i++) {
       if (!st.alive[i]) continue
       let cur = t
       if (this.sleeping[i]) {
         if (this.wakeT[i] > tNew) { this.skippedUpdates++; continue }
+        // Wake at the STEP START (<= wakeT, still inside the guaranteed
+        // interval) so this step is processed exactly as the baseline.
         this.sleeping[i] = 0; this.wakeCount++
-        cur = this.wakeT[i]
+        cur = t
         if (st.sitting[i]) {
-          pl.surfAt(st.x[i], st.y[i], cur, S5); st.z[i] = S5[0]
+          pl.surfAt(st.x[i], st.y[i], t, S5); st.z[i] = S5[0]
         } else {
-          this.materialize(i, cur)
+          this.materialize(i, t)
         }
-        if (cur < t) cur = t
       }
       let rounds = 0
       while (cur < tNew - 1e-15 && rounds < MAX_EVENT_ROUNDS) {
@@ -252,14 +285,64 @@ export class TransientSandSim {
         if (Math.abs(vn2) < vStick) { st.sitting[i] = 1; st.vx[i] = 0; st.vy[i] = 0 }
       }
       if (cur < tNew - 1e-15) {
-        // Event-cap fallback: inelastic micro-bounces accumulate in finite
-        // time; seat on the surface (counted regularization, as Python).
+        // Event cap reached (counted): subdivide the remaining interval
+        // into 8 legacy single-contact substeps instead of forcing a
+        // physical state change. Seating still occurs only via the stick
+        // criterion. True inelastic collapse is thereby approximated by
+        // ever-smaller bounces, not by fiat.
         this.nEventCap++
-        pl.surfAt(st.x[i], st.y[i], tNew, S5)
-        st.z[i] = S5[0]; st.vz[i] = S5[3]; st.sitting[i] = 1
-        st.vx[i] = 0; st.vy[i] = 0
+        const subN = 8
+        for (let sIdx = 0; sIdx < subN && cur < tNew - 1e-15; sIdx++) {
+          const subEnd = cur + (tNew - cur) / (subN - sIdx)
+          if (st.sitting[i]) {
+            pl.surfAt(st.x[i], st.y[i], subEnd, S5)
+            st.z[i] = S5[0]
+            if (S5[4] < -G) { st.sitting[i] = 0; st.vz[i] = S5[3]; st.z[i] = S5[0] + 1e-9; this.nDetach++ }
+            cur = subEnd
+            continue
+          }
+          const d = subEnd - cur
+          const xf = st.x[i] + st.vx[i] * d; const yf = st.y[i] + st.vy[i] * d
+          const zf = st.z[i] + st.vz[i] * d - 0.5 * G * d * d
+          pl.surfAt(xf, yf, subEnd, S5)
+          if (zf >= S5[0]) {
+            st.x[i] = xf; st.y[i] = yf; st.z[i] = zf; st.vz[i] -= G * d; cur = subEnd; continue
+          }
+          const x0 = st.x[i]; const y0 = st.y[i]; const z0 = st.z[i]
+          const vx0 = st.vx[i]; const vy0 = st.vy[i]; const vz0 = st.vz[i]
+          let lo2 = cur; let hi2 = subEnd
+          for (let k = 0; k < EVENT_BISECT_ITERS; k++) {
+            const tm = 0.5 * (lo2 + hi2); const dd = tm - cur
+            pl.surfAt(x0 + vx0 * dd, y0 + vy0 * dd, tm, S5)
+            if (z0 + vz0 * dd - 0.5 * G * dd * dd <= S5[0]) hi2 = tm; else lo2 = tm
+          }
+          const tc = 0.5 * (lo2 + hi2); const dd = tc - cur
+          const xc = x0 + vx0 * dd; const yc = y0 + vy0 * dd; const vzc = vz0 - G * dd
+          pl.surfAt(xc, yc, tc, S5)
+          const nn2 = Math.sqrt(S5[1] * S5[1] + S5[2] * S5[2] + 1)
+          const nx2 = -S5[1] / nn2; const ny2 = -S5[2] / nn2; const nz2 = 1 / nn2
+          const rvz2 = vzc - S5[3]
+          const vn = vx0 * nx2 + vy0 * ny2 + rvz2 * nz2
+          st.x[i] = xc; st.y[i] = yc; st.z[i] = S5[0] + 1e-9
+          if (vn < 0) {
+            const k1 = (1 + p.e) * vn
+            const r2x = vx0 - k1 * nx2; const r2y = vy0 - k1 * ny2; const r2z = rvz2 - k1 * nz2
+            const vn2 = r2x * nx2 + r2y * ny2 + r2z * nz2
+            st.vx[i] = vn2 * nx2 + p.beta * (r2x - vn2 * nx2)
+            st.vy[i] = vn2 * ny2 + p.beta * (r2y - vn2 * ny2)
+            st.vz[i] = vn2 * nz2 + p.beta * (r2z - vn2 * nz2) + S5[3]
+            this.nBounce++
+            if (Math.abs(vn2) < vStick) { st.sitting[i] = 1; st.vx[i] = 0; st.vy[i] = 0 }
+          } else st.vz[i] = vzc
+          const rem2 = subEnd - tc
+          if (!st.sitting[i]) {
+            st.x[i] += st.vx[i] * rem2; st.y[i] += st.vy[i] * rem2
+            st.z[i] += st.vz[i] * rem2 - 0.5 * G * rem2 * rem2; st.vz[i] -= G * rem2
+          }
+          cur = subEnd
+        }
       }
-      if (this.sleep.enabled && st.alive[i] && tNew >= this.nextEvalT[i]) {
+      if (this.sleep.enabled && !customDt && st.alive[i] && tNew >= this.nextEvalT[i]) {
         if (st.sitting[i]) this.trySleepSitting(i, tNew)
         else this.trySleepFlying(i, tNew)
         // Failed evaluations back off 16 steps (management only; the

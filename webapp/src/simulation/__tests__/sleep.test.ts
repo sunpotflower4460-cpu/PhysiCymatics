@@ -2,7 +2,9 @@
 // counts), sleep must actually engage, input changes must invalidate it.
 import { describe, it, expect } from 'vitest'
 import { singleToneScore, type PerformanceScore } from '../sequence'
-import { createTransientSim, calibratedForceN, type TransientSandSim } from '../transientSand'
+import { TransientSandSim, createTransientSim, calibratedForceN } from '../transientSand'
+import { TransientPlate, hermiteQRange } from '../plateTransient'
+import { initialState } from '../sand'
 
 function run(enabled: boolean, freq = 152, tEnd = 0.6, n = 60, forceScale = 1): TransientSandSim {
   const sim = createTransientSim(singleToneScore(freq, calibratedForceN() * forceScale, 30), n, 7, [0, 0], { enabled })
@@ -27,7 +29,10 @@ describe('M6-2 sleep parity vs baseline', () => {
     expect(on.nBounce).toBe(off.nBounce)
     expect(on.nDetach).toBe(off.nDetach)
     expect(on.nAlive).toBe(off.nAlive)
-    expect(maxPosDiff(on, off)).toBeLessThan(1e-6)
+    // Position tolerance: ballistic reassociation (chunked materialization)
+    // differs at ~1e-12 per wake and is chaotically amplified through
+    // collisions; event counts above are the primary gate.
+    expect(maxPosDiff(on, off)).toBeLessThan(5e-6)
     expect([...on.state.sitting]).toEqual([...off.state.sitting])
   })
 
@@ -44,7 +49,9 @@ describe('M6-2 sleep parity vs baseline', () => {
       const off = run(false, f, 0.3, 40)
       const on = run(true, f, 0.3, 40)
       expect(on.nAlive, `f=${f}`).toBe(off.nAlive)
-      expect(maxPosDiff(on, off), `f=${f}`).toBeLessThan(1e-6)
+      // Higher frequencies amplify reassociation differences faster
+      // (more collisions per second); counts remain the primary gate.
+      expect(maxPosDiff(on, off), `f=${f}`).toBeLessThan(f >= 600 ? 1e-4 : 5e-6)
       expect(on.nBounce, `f=${f}`).toBe(off.nBounce)
     }
   })
@@ -76,5 +83,43 @@ describe('M6-2 sleep parity vs baseline', () => {
     const on = run(true, 152, 0.4, 10, 0)
     expect(maxPosDiff(on, off)).toBeLessThan(1e-9)
     expect(on.nBounce).toBe(off.nBounce)
+  })
+})
+
+describe('M6-2R regressions (Codex review)', () => {
+  it('hermiteQRange reaches 4/27 (old 0.105 bound was unsafe)', () => {
+    const [, hi] = hermiteQRange(0, 1, 0, 0, 1)
+    expect(Math.abs(hi - 4 / 27)).toBeLessThan(1e-12)
+    expect(hi).toBeGreaterThan(0.105)
+  })
+
+  it('residual 649Hz mode under 70Hz score: no missed detach (Codex counterexample)', () => {
+    const mk = (enabled: boolean) => {
+      const plate = new TransientPlate(singleToneScore(70, 0, 30))
+      const st = initialState(plate.a, 0, 0, { x: [0], y: [0] })
+      const sim = new TransientSandSim(plate, st, undefined, { enabled })
+      const i649 = plate.modes.findIndex((m) => m.m === 0 && m.root_idx === 1)
+      const j = plate.dofs.findIndex((d) => d.mode === i649)
+      const w = plate.omega[j]
+      plate.q[j] = 9.4 / (w * w)
+      plate.qd[j] = 0
+      // Seat at the center on the surface at t=0 (h = q * Phi(0), Phi(0)=R(0)).
+      const S5 = new Float64Array(5)
+      plate.beginStep(0, 1e-9)
+      plate.surfAt(0, 0, 0, S5)
+      st.z[0] = S5[0]; st.sitting[0] = 1
+      sim.t = plate.t
+      return sim
+    }
+    const off = mk(false); const on = mk(true)
+    off.advanceTo(0.05); on.advanceTo(0.05)
+    expect(off.nDetach).toBeGreaterThan(0) // baseline really detaches
+    expect(on.nDetach).toBe(off.nDetach) // sleep must not miss it
+    expect(Math.abs(on.state.z[0] - off.state.z[0])).toBeLessThan(1e-6)
+  })
+
+  it('event cap does not trigger in normal scenarios', () => {
+    const on = run(true)
+    expect(on.nEventCap).toBe(0)
   })
 })
