@@ -103,3 +103,33 @@ def test_wake_all_invalidates(basis):
     assert not on.sleeping.any()
     on.advance_to(0.3)
     assert np.all(np.isfinite(st.x))
+
+
+def test_flying_sleep_within_cached_horizon(basis):
+    # Codex re-review: a flyer evaluated against a REUSED lookahead cache
+    # must not be given a full fresh window; its wake time must stay within
+    # the horizon actually checked (cache end).
+    score = pt.ScoreSignal([dict(start_s=0.0, end_s=60.0, frequency_hz=20.0,
+                                  forcePeak_N=0.0, attack_s=0.0, release_s=0.0)])
+    plate = pt.TransientPlate(basis, score)
+    st, _ = sb.initial_state(basis["modes"][0], 2,
+                              init_xy=(np.array([0.0, 0.0]), np.array([0.0, 0.0])))
+    sim = pt.TransientSandSim(plate, st, sleep_enabled=True)
+    # Particle 0 seated (creates the lookahead cache on step 1);
+    # particle 1 a low unsafe flyer (evaluated, fails, cools down).
+    st.sitting[0] = True; st.z[0] = 0.0
+    st.sitting[1] = False; st.z[1] = 5e-4; st.vz[1] = 0.0
+    while sim.t < 0.24:
+        sim.step()
+    assert sim.look_cache is not None
+    cache_end = sim.look_cache["end"]
+    assert cache_end - sim.t < pt.SLEEP_WINDOW_S  # cache is genuinely older
+    # Now make the flyer trivially safe for the remaining horizon and step.
+    # (It fell and seated-slept during the run; reset it to a just-woken
+    # awake flyer so this step really re-evaluates flying sleep.)
+    st.z[1] = 2.0; st.vz[1] = 5.0; st.sitting[1] = False
+    sim.sleeping[1] = False
+    sim.eval_cooldown[1] = 0
+    sim.step()
+    assert sim.sleeping[1]
+    assert sim.wake_t[1] <= cache_end + 1e-12

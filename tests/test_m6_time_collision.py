@@ -64,6 +64,20 @@ def test_multiple_bounces_one_step(basis):
     assert float(st.z[0]) >= -1e-12
 
 
+def test_fallback_remainder_never_below_surface(basis, monkeypatch):
+    # Codex re-review repro: when the event cap is reached, fallback
+    # substeps must keep checking contacts over their remainder instead
+    # of ballistically accepting a below-surface endpoint. The cap is
+    # lowered here so the fallback is really exercised (with the default
+    # 512 rounds this particle sticks inside the main loop).
+    monkeypatch.setattr(pt, "MAX_EVENT_ROUNDS", 2)
+    sim, st = _sim(basis, force=0.0)
+    st.z[0] = 0.001; st.vz[0] = -0.1
+    sim.step(1.0)
+    assert sim.n_event_cap > 0
+    assert float(st.z[0]) >= -1e-12
+
+
 def test_hidden_midstep_contact(basis):
     # Driven plate: in ONE long step (half period) the surface rises through
     # a hovering particle mid-step although it is above at both ends.

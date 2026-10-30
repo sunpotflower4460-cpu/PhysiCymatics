@@ -629,57 +629,75 @@ class TransientSandSim:
                         self.n_detach += int(di.size)
                     cur[sit_l] = se_sit
                 if fly_l.size:
-                    d = se_fly - cur[fly_l]
-                    xf = x[fly_l] + vx[fly_l]*d; yf = y[fly_l] + vy[fly_l]*d
-                    zf = z[fly_l] + vz[fly_l]*d - 0.5*G*d*d
-                    hf,_,_,_,_ = pl.surf_at(xf, yf, se_fly)
-                    okm = zf >= hf
-                    oi = fly_l[okm]
-                    if oi.size:
-                        x[oi] = xf[okm]; y[oi] = yf[okm]; z[oi] = zf[okm]
-                        vz[oi] -= G*d[okm]; cur[oi] = se_fly[okm]
-                    ci = fly_l[~okm]
-                    if ci.size:
-                        se_c = se_fly[~okm]
-                        x0 = x[ci].copy(); y0 = y[ci].copy(); z0 = z[ci].copy()
-                        vx0 = vx[ci].copy(); vy0 = vy[ci].copy(); vz0 = vz[ci].copy()
-                        c0 = cur[ci].copy()
-                        lo = c0.copy(); hi = se_c.copy()
-                        for _ in range(EVENT_BISECT_ITERS):
-                            tm = 0.5*(lo + hi); dd = tm - c0
-                            hm,_,_,_,_ = pl.surf_at(x0 + vx0*dd, y0 + vy0*dd, tm)
-                            below = z0 + vz0*dd - 0.5*G*dd*dd <= hm
-                            hi = np.where(below, tm, hi); lo = np.where(below, lo, tm)
-                        tc = 0.5*(lo + hi); dd = tc - c0
-                        xc = x0 + vx0*dd; yc = y0 + vy0*dd
-                        vzc = vz0 - G*dd
-                        hc, hx, hy, uz, _w = pl.surf_at(xc, yc, tc)
-                        nn = np.sqrt(hx*hx + hy*hy + 1.0)
-                        nx_, ny_, nz_ = -hx/nn, -hy/nn, 1.0/nn
-                        rvx, rvy, rvz = vx0, vy0, vzc - uz
-                        vn = rvx*nx_ + rvy*ny_ + rvz*nz_
-                        hit = vn < 0
-                        rvx2 = rvx - (1+e)*vn*nx_; rvy2 = rvy - (1+e)*vn*ny_; rvz2 = rvz - (1+e)*vn*nz_
-                        vn2 = rvx2*nx_ + rvy2*ny_ + rvz2*nz_
-                        tx, ty, tz = rvx2-vn2*nx_, rvy2-vn2*ny_, rvz2-vn2*nz_
-                        x[ci] = xc; y[ci] = yc; z[ci] = hc + 1e-9
-                        wi = ci[hit]
-                        vx[wi] = vn2[hit]*nx_[hit] + beta*tx[hit]
-                        vy[wi] = vn2[hit]*ny_[hit] + beta*ty[hit]
-                        vz[wi] = vn2[hit]*nz_[hit] + beta*tz[hit] + uz[hit]
-                        self.n_bounce += int(hit.sum())
-                        vz[ci[~hit]] = vzc[~hit]
-                        stick = hit & (np.abs(vn2) < v_stick)
-                        si2 = ci[stick]; sitting[si2] = True
-                        if p.c_roll == 0.0:
-                            vx[si2] = 0.0; vy[si2] = 0.0
-                        rem2 = se_c - tc
-                        mv = ci[~sitting[ci]]
-                        if mv.size:
-                            rm = rem2[~sitting[ci]]
-                            x[mv] += vx[mv]*rm; y[mv] += vy[mv]*rm
-                            z[mv] += vz[mv]*rm - 0.5*G*rm*rm; vz[mv] -= G*rm
-                        cur[ci] = se_c
+                    # Segment loop inside the substep: a ballistic endpoint
+                    # is accepted only at/above the surface; after each
+                    # contact the search resumes from tc (never an unchecked
+                    # remainder). SEG_CAP is a safety valve leaving the
+                    # particle at its last contact state, not below surface.
+                    for _seg in range(256):
+                        am = (cur[fly_l] < se_fly - 1e-15) & ~sitting[fly_l]
+                        act = fly_l[am]; se_a = se_fly[am]
+                        if act.size == 0:
+                            break
+                        d = se_a - cur[act]
+                        xf = x[act] + vx[act]*d; yf = y[act] + vy[act]*d
+                        zf = z[act] + vz[act]*d - 0.5*G*d*d
+                        hf,_,_,_,_ = pl.surf_at(xf, yf, se_a)
+                        okm = zf >= hf
+                        oi = act[okm]
+                        if oi.size:
+                            x[oi] = xf[okm]; y[oi] = yf[okm]; z[oi] = zf[okm]
+                            vz[oi] -= G*d[okm]; cur[oi] = se_a[okm]
+                        ci = act[~okm]
+                        if ci.size:
+                            se_c = se_a[~okm]
+                            x0 = x[ci].copy(); y0 = y[ci].copy(); z0 = z[ci].copy()
+                            vx0 = vx[ci].copy(); vy0 = vy[ci].copy(); vz0 = vz[ci].copy()
+                            c0 = cur[ci].copy()
+                            lo = c0.copy(); hi = se_c.copy()
+                            for _ in range(EVENT_BISECT_ITERS):
+                                tm = 0.5*(lo + hi); dd = tm - c0
+                                hm,_,_,_,_ = pl.surf_at(x0 + vx0*dd, y0 + vy0*dd, tm)
+                                below = z0 + vz0*dd - 0.5*G*dd*dd <= hm
+                                hi = np.where(below, tm, hi); lo = np.where(below, lo, tm)
+                            tc = 0.5*(lo + hi); dd = tc - c0
+                            xc = x0 + vx0*dd; yc = y0 + vy0*dd
+                            vzc = vz0 - G*dd
+                            hc, hx, hy, uz, _w = pl.surf_at(xc, yc, tc)
+                            nn = np.sqrt(hx*hx + hy*hy + 1.0)
+                            nx_, ny_, nz_ = -hx/nn, -hy/nn, 1.0/nn
+                            rvx, rvy, rvz = vx0, vy0, vzc - uz
+                            vn = rvx*nx_ + rvy*ny_ + rvz*nz_
+                            hit = vn < 0
+                            rvx2 = rvx - (1+e)*vn*nx_; rvy2 = rvy - (1+e)*vn*ny_; rvz2 = rvz - (1+e)*vn*nz_
+                            vn2 = rvx2*nx_ + rvy2*ny_ + rvz2*nz_
+                            tx, ty, tz = rvx2-vn2*nx_, rvy2-vn2*ny_, rvz2-vn2*nz_
+                            x[ci] = xc; y[ci] = yc; z[ci] = hc + 1e-9
+                            wi = ci[hit]
+                            vx[wi] = vn2[hit]*nx_[hit] + beta*tx[hit]
+                            vy[wi] = vn2[hit]*ny_[hit] + beta*ty[hit]
+                            vz[wi] = vn2[hit]*nz_[hit] + beta*tz[hit] + uz[hit]
+                            self.n_bounce += int(hit.sum())
+                            vz[ci[~hit]] = vzc[~hit]
+                            stick = hit & (np.abs(vn2) < v_stick)
+                            si2 = ci[stick]; sitting[si2] = True
+                            if p.c_roll == 0.0:
+                                vx[si2] = 0.0; vy[si2] = 0.0
+                            cur[ci] = tc
+                    # Particles that stuck during the segments follow the
+                    # surface to their substep end (detach still checked).
+                    sm = sitting[fly_l] & (cur[fly_l] < se_fly - 1e-15)
+                    stk = fly_l[sm]; se_k = se_fly[sm]
+                    if stk.size:
+                        hs,_,_,uzs,wtts = pl.surf_at(x[stk], y[stk], se_k)
+                        z[stk] = hs
+                        det = wtts < -G
+                        di = stk[det]
+                        if di.size:
+                            sitting[di] = False
+                            vz[di] = uzs[det]; z[di] = hs[det] + 1e-9
+                            self.n_detach += int(di.size)
+                        cur[stk] = se_k
         # Sleep evaluation for particles that finished this step awake.
         if self.sleep_enabled and not custom_dt:
             self.eval_cooldown = np.maximum(self.eval_cooldown - 1, 0)
@@ -716,13 +734,16 @@ class TransientSandSim:
                         return z_min > h_bound_w + SLEEP_HEIGHT_MARGIN
                     lo = np.zeros(fly_d.size)
                     hi = np.full(fly_d.size, min(SLEEP_WINDOW_S, lc["end"] - t_new))
+                    horizon = hi.copy()  # actually-checked span of THIS cache
                     ok0 = safe(lo)
                     full = safe(hi)
                     for _ in range(40):
                         mid = 0.5*(lo + hi)
                         sm = safe(mid)
                         lo = np.where(sm, mid, lo); hi = np.where(sm, hi, mid)
-                    delta = np.where(full, SLEEP_WINDOW_S, lo)
+                    # Full-span sleep reaches only the checked horizon, never
+                    # a fresh SLEEP_WINDOW_S beyond a reused cache's end.
+                    delta = np.where(full, horizon, lo)
                     # Edge-exit root (straight xy from inside the disk).
                     px, py, pvx, pvy = x[fly_d], y[fly_d], vx[fly_d], vy[fly_d]
                     A = pvx*pvx + pvy*pvy

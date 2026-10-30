@@ -122,4 +122,30 @@ describe('M6-2R regressions (Codex review)', () => {
     const on = run(true)
     expect(on.nEventCap).toBe(0)
   })
+
+  it('fallback substeps never accept a below-surface endpoint (Codex re-review)', () => {
+    // Unforced plate, one long step: many bounces + collapse inside the
+    // step. The event-cap fallback must keep checking contacts over each
+    // substep remainder instead of ballistically accepting z < 0.
+    const sim = createTransientSim(singleToneScore(152, 0, 30), 1, 7, [0, 0], { enabled: false })
+    const st = sim.state
+    st.x[0] = 0; st.y[0] = 0; st.z[0] = 0.001
+    st.vx[0] = 0; st.vy[0] = 0; st.vz[0] = -0.1; st.sitting[0] = 0
+    sim.step(1)
+    expect(sim.nEventCap).toBeGreaterThan(0)
+    expect(st.z[0]).toBeGreaterThanOrEqual(-1e-12)
+  })
+
+  it('lost particles are excluded from the sleeping fraction (Codex re-review)', () => {
+    const sim = createTransientSim(singleToneScore(152, 0, 30), 2, 7, [0, 0], { enabled: true })
+    const st = sim.state; const a = sim.plate.a
+    st.x[0] = a - 0.001; st.y[0] = 0; st.z[0] = 0.01
+    st.vx[0] = 20; st.vy[0] = 0; st.vz[0] = 0; st.sitting[0] = 0
+    st.x[1] = 0; st.y[1] = 0; st.z[1] = 0
+    st.vx[1] = 0; st.vy[1] = 0; st.vz[1] = 0; st.sitting[1] = 1
+    sim.step()
+    expect(st.alive[0]).toBe(0)
+    expect(sim.sleeping[0]).toBe(0)
+    expect(sim.stats().sleepingFrac).toBeLessThanOrEqual(1)
+  })
 })

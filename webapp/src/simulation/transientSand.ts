@@ -105,7 +105,7 @@ export class TransientSandSim {
     }
   }
 
-  get nSleeping(): number { let s = 0; for (const v of this.sleeping) s += v; return s }
+  get nSleeping(): number { let s = 0; for (let i = 0; i < this.sleeping.length; i++) if (this.state.alive[i]) s += this.sleeping[i]; return s }
 
   // M6-2R: sleep bounds come from the lookahead cache, not force bounds.
   // Kept for worker API compatibility; invalidates the lookahead cache so
@@ -301,45 +301,55 @@ export class TransientSandSim {
             cur = subEnd
             continue
           }
-          const d = subEnd - cur
-          const xf = st.x[i] + st.vx[i] * d; const yf = st.y[i] + st.vy[i] * d
-          const zf = st.z[i] + st.vz[i] * d - 0.5 * G * d * d
-          pl.surfAt(xf, yf, subEnd, S5)
-          if (zf >= S5[0]) {
-            st.x[i] = xf; st.y[i] = yf; st.z[i] = zf; st.vz[i] -= G * d; cur = subEnd; continue
+          // Within the substep, keep processing contacts segment by
+          // segment: a ballistic endpoint is accepted only at/above the
+          // surface, and after each contact the search resumes from tc
+          // (never an unchecked remainder). The stick floor bounds
+          // collapse iteration; SEG_CAP is a safety valve that leaves
+          // the particle at its last contact state, not below surface.
+          const SEG_CAP = 256
+          for (let seg = 0; seg < SEG_CAP && cur < subEnd - 1e-15 && !st.sitting[i]; seg++) {
+            const d = subEnd - cur
+            const xf = st.x[i] + st.vx[i] * d; const yf = st.y[i] + st.vy[i] * d
+            const zf = st.z[i] + st.vz[i] * d - 0.5 * G * d * d
+            pl.surfAt(xf, yf, subEnd, S5)
+            if (zf >= S5[0]) {
+              st.x[i] = xf; st.y[i] = yf; st.z[i] = zf; st.vz[i] -= G * d; cur = subEnd; break
+            }
+            const x0 = st.x[i]; const y0 = st.y[i]; const z0 = st.z[i]
+            const vx0 = st.vx[i]; const vy0 = st.vy[i]; const vz0 = st.vz[i]
+            let lo2 = cur; let hi2 = subEnd
+            for (let k = 0; k < EVENT_BISECT_ITERS; k++) {
+              const tm = 0.5 * (lo2 + hi2); const dd = tm - cur
+              pl.surfAt(x0 + vx0 * dd, y0 + vy0 * dd, tm, S5)
+              if (z0 + vz0 * dd - 0.5 * G * dd * dd <= S5[0]) hi2 = tm; else lo2 = tm
+            }
+            const tc = 0.5 * (lo2 + hi2); const dd = tc - cur
+            const xc = x0 + vx0 * dd; const yc = y0 + vy0 * dd; const vzc = vz0 - G * dd
+            pl.surfAt(xc, yc, tc, S5)
+            const nn2 = Math.sqrt(S5[1] * S5[1] + S5[2] * S5[2] + 1)
+            const nx2 = -S5[1] / nn2; const ny2 = -S5[2] / nn2; const nz2 = 1 / nn2
+            const rvz2 = vzc - S5[3]
+            const vn = vx0 * nx2 + vy0 * ny2 + rvz2 * nz2
+            st.x[i] = xc; st.y[i] = yc; st.z[i] = S5[0] + 1e-9
+            if (vn < 0) {
+              const k1 = (1 + p.e) * vn
+              const r2x = vx0 - k1 * nx2; const r2y = vy0 - k1 * ny2; const r2z = rvz2 - k1 * nz2
+              const vn2 = r2x * nx2 + r2y * ny2 + r2z * nz2
+              st.vx[i] = vn2 * nx2 + p.beta * (r2x - vn2 * nx2)
+              st.vy[i] = vn2 * ny2 + p.beta * (r2y - vn2 * ny2)
+              st.vz[i] = vn2 * nz2 + p.beta * (r2z - vn2 * nz2) + S5[3]
+              this.nBounce++
+              if (Math.abs(vn2) < vStick) { st.sitting[i] = 1; st.vx[i] = 0; st.vy[i] = 0 }
+            } else st.vz[i] = vzc
+            cur = tc
           }
-          const x0 = st.x[i]; const y0 = st.y[i]; const z0 = st.z[i]
-          const vx0 = st.vx[i]; const vy0 = st.vy[i]; const vz0 = st.vz[i]
-          let lo2 = cur; let hi2 = subEnd
-          for (let k = 0; k < EVENT_BISECT_ITERS; k++) {
-            const tm = 0.5 * (lo2 + hi2); const dd = tm - cur
-            pl.surfAt(x0 + vx0 * dd, y0 + vy0 * dd, tm, S5)
-            if (z0 + vz0 * dd - 0.5 * G * dd * dd <= S5[0]) hi2 = tm; else lo2 = tm
+          if (st.sitting[i]) {
+            pl.surfAt(st.x[i], st.y[i], subEnd, S5)
+            st.z[i] = S5[0]
+            if (S5[4] < -G) { st.sitting[i] = 0; st.vz[i] = S5[3]; st.z[i] = S5[0] + 1e-9; this.nDetach++ }
+            cur = subEnd
           }
-          const tc = 0.5 * (lo2 + hi2); const dd = tc - cur
-          const xc = x0 + vx0 * dd; const yc = y0 + vy0 * dd; const vzc = vz0 - G * dd
-          pl.surfAt(xc, yc, tc, S5)
-          const nn2 = Math.sqrt(S5[1] * S5[1] + S5[2] * S5[2] + 1)
-          const nx2 = -S5[1] / nn2; const ny2 = -S5[2] / nn2; const nz2 = 1 / nn2
-          const rvz2 = vzc - S5[3]
-          const vn = vx0 * nx2 + vy0 * ny2 + rvz2 * nz2
-          st.x[i] = xc; st.y[i] = yc; st.z[i] = S5[0] + 1e-9
-          if (vn < 0) {
-            const k1 = (1 + p.e) * vn
-            const r2x = vx0 - k1 * nx2; const r2y = vy0 - k1 * ny2; const r2z = rvz2 - k1 * nz2
-            const vn2 = r2x * nx2 + r2y * ny2 + r2z * nz2
-            st.vx[i] = vn2 * nx2 + p.beta * (r2x - vn2 * nx2)
-            st.vy[i] = vn2 * ny2 + p.beta * (r2y - vn2 * ny2)
-            st.vz[i] = vn2 * nz2 + p.beta * (r2z - vn2 * nz2) + S5[3]
-            this.nBounce++
-            if (Math.abs(vn2) < vStick) { st.sitting[i] = 1; st.vx[i] = 0; st.vy[i] = 0 }
-          } else st.vz[i] = vzc
-          const rem2 = subEnd - tc
-          if (!st.sitting[i]) {
-            st.x[i] += st.vx[i] * rem2; st.y[i] += st.vy[i] * rem2
-            st.z[i] += st.vz[i] * rem2 - 0.5 * G * rem2 * rem2; st.vz[i] -= G * rem2
-          }
-          cur = subEnd
         }
       }
       if (this.sleep.enabled && !customDt && st.alive[i] && tNew >= this.nextEvalT[i]) {
@@ -351,7 +361,7 @@ export class TransientSandSim {
       }
     }
     for (let i = 0; i < n; i++) {
-      if (st.alive[i] && Math.hypot(st.x[i], st.y[i]) > pl.a) st.alive[i] = 0
+      if (st.alive[i] && Math.hypot(st.x[i], st.y[i]) > pl.a) { st.alive[i] = 0; this.sleeping[i] = 0 }
     }
     this.t = tNew
   }
