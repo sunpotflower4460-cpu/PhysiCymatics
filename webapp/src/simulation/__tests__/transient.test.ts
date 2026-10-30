@@ -131,7 +131,10 @@ describe('M6-1 time and contact', () => {
     }
     const plate = new TransientPlate(score)
     const st = initialState(plate.a, 0, 0, { x: P.init_x, y: P.init_y })
-    const sim = new TransientSandSim(plate, st)
+    // Cross-language physics parity is gated with sleep OFF on both sides
+    // (fixture generated with sleep_enabled=False); sleep on/off parity is
+    // gated separately per language in sleep.test.ts / test_m6_sleep.py.
+    const sim = new TransientSandSim(plate, st, undefined, { enabled: false })
     sim.advanceTo(0.5)
     expect(Math.abs(sim.t - 0.5)).toBeLessThan(1e-12)
     const dx = Math.max(...P.x.map((v, i) => Math.abs(v - st.x[i])))

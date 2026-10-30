@@ -91,6 +91,39 @@ export class TransientPlate {
 
   scoreTime(t: number): number { return t - this.epoch }
 
+  /** Per-DOF forcing bound |Phi_j(drive)| * maxForcePeak / M_j [m/s^2 per unit q]. */
+  forceBounds(): Float64Array {
+    const fMax = Math.max(0, ...this.signal.score.events.map((e) => e.forcePeak_N))
+    const out = new Float64Array(this.ndof)
+    for (let j = 0; j < this.ndof; j++) out[j] = (Math.abs(this.phiDrive[j]) * fMax) / this.mass[j]
+    return out
+  }
+
+  /** Per-DOF modal energy amplitude E_j = sqrt(qd^2 + (omega q)^2) at segment end. */
+  energyPerDof(out: Float64Array): void {
+    const q = this.seg ? this.seg.q1 : this.q
+    const qd = this.seg ? this.seg.qd1 : this.qd
+    for (let j = 0; j < this.ndof; j++) out[j] = Math.hypot(qd[j], this.omega[j] * q[j])
+  }
+
+  /** All DOF shape values Phi_j(x, y) (no gradients). */
+  phiAll(x: number, y: number, out: Float64Array): void {
+    const r = Math.hypot(x, y)
+    const idx = Math.min((r * (this.ng1 / this.a)) | 0, this.ng1)
+    const rs = r < 1e-12 ? 1e-12 : r
+    const c = x / rs; const sn = y / rs
+    const cm = [1, c, 0, 0, 0]; const sm = [0, sn, 0, 0, 0]
+    for (let m = 2; m <= 4; m++) {
+      cm[m] = cm[m - 1] * c - sm[m - 1] * sn
+      sm[m] = sm[m - 1] * c + cm[m - 1] * sn
+    }
+    for (let j = 0; j < this.ndof; j++) {
+      const d = this.dofs[j]; const m = this.modes[d.mode].m
+      const R = this.R[d.mode][idx]
+      out[j] = m === 0 ? R : d.kind === 'cos' ? R * cm[m] : R * sm[m]
+    }
+  }
+
   private accel(q: Float64Array, qd: Float64Array, t: number, out: Float64Array): void {
     const ts = t - this.epoch
     const F = this.signal.forcePeakAt(ts) * this.signal.u(ts)
@@ -100,10 +133,10 @@ export class TransientPlate {
     }
   }
 
-  beginStep(t0: number, t1: number): void {
+  /** RK4-advance a modal state over [t0, t1] (same substeps as beginStep). */
+  advanceState(qIn: Float64Array, qdIn: Float64Array, t0: number, t1: number): [Float64Array, Float64Array] {
     const n = this.ndof
-    const q0 = Float64Array.from(this.q); const qd0 = Float64Array.from(this.qd)
-    let q = Float64Array.from(this.q); let qd = Float64Array.from(this.qd)
+    let q = Float64Array.from(qIn); let qd = Float64Array.from(qdIn)
     const hMax = 0.3 / Math.max(...this.omega)
     const nsub = Math.max(1, Math.ceil((t1 - t0) / hMax))
     const h = (t1 - t0) / nsub
@@ -128,12 +161,20 @@ export class TransientPlate {
       }
       t += h
     }
+    return [q, qd]
+  }
+
+  beginStep(t0: number, t1: number): void {
+    const n = this.ndof
+    const q0 = Float64Array.from(this.q); const qd0 = Float64Array.from(this.qd)
+    const [q, qd] = this.advanceState(q0, qd0, t0, t1)
     this.q = q; this.qd = qd; this.t = t1
     this.seg = { t0, t1, q0, qd0, q1: Float64Array.from(q), qd1: Float64Array.from(qd) }
     // Conservative |h| bound over the segment (see Python plate_transient).
+    // Hermite tangent basis max is 4/27 (at s=1/3), not 0.105.
     let hb = 0
     for (let j = 0; j < n; j++) {
-      hb += Math.max(Math.abs(q0[j]), Math.abs(q[j])) + 0.105 * (t1 - t0) * (Math.abs(qd0[j]) + Math.abs(qd[j]))
+      hb += Math.max(Math.abs(q0[j]), Math.abs(q[j])) + (4 / 27) * (t1 - t0) * (Math.abs(qd0[j]) + Math.abs(qd[j]))
     }
     this.hBound = hb
   }
@@ -202,6 +243,71 @@ export class TransientPlate {
     return (targetA * this.mass[j] * 2 * this.zeta * this.omega[j] ** 2) / Math.abs(this.phiDrive[j])
   }
 
+  /**
+   * Exact per-DOF ranges of the Hermite q and qdd over a future window,
+   * obtained by advancing a clone with the same dt sequence (dtAt) and the
+   * same RK4 substeps the real advance will use. qdd is linear per segment
+   * (endpoints suffice); q is cubic (endpoints + critical points).
+   * Valid only while real steps follow dtAt exactly (no shortened steps).
+   */
+  lookaheadRanges(fromT: number, windowS: number, dtAt: (t: number) => number) {
+    const n = this.ndof
+    const qMin = new Float64Array(n).fill(Infinity); const qMax = new Float64Array(n).fill(-Infinity)
+    const aMin = new Float64Array(n).fill(Infinity); const aMax = new Float64Array(n).fill(-Infinity)
+    const q = new Float64Array(this.q); const qd = new Float64Array(this.qd)
+    let t = fromT
+    const end = fromT + windowS
+    while (t < end - 1e-15) {
+      const dt = Math.min(dtAt(t), end - t)
+      const [q1, qd1] = this.advanceState(q, qd, t, t + dt)
+      const h = dt
+      for (let j = 0; j < n; j++) {
+        const r = hermiteQRange(q[j], qd[j], q1[j], qd1[j], h)
+        if (r[0] < qMin[j]) qMin[j] = r[0]
+        if (r[1] > qMax[j]) qMax[j] = r[1]
+        const a0 = (-6 * q[j] - 4 * h * qd[j] + 6 * q1[j] - 2 * h * qd1[j]) / (h * h)
+        const a1 = (6 * q[j] + 2 * h * qd[j] - 6 * q1[j] + 4 * h * qd1[j]) / (h * h)
+        const lo = Math.min(a0, a1); const hi = Math.max(a0, a1)
+        if (lo < aMin[j]) aMin[j] = lo
+        if (hi > aMax[j]) aMax[j] = hi
+      }
+      q.set(q1); qd.set(qd1); t += dt
+    }
+    return { end, qMin, qMax, aMin, aMax }
+  }
+
   modeIndex152(): number { return this.modes.findIndex((m) => m.m === 0 && m.root_idx === 0) }
   resonanceFreqs(): number[] { return this.modes.map((m) => m.f_hz) }
+}
+
+/** Exact [min, max] of the cubic Hermite q(s), s in [0,1]. */
+export function hermiteQRange(q0: number, qd0: number, q1: number, qd1: number, h: number): [number, number] {
+  const qAt = (s: number): number => {
+    const s2 = s * s; const s3 = s2 * s
+    return (2 * s3 - 3 * s2 + 1) * q0 + (s3 - 2 * s2 + s) * h * qd0
+      + (-2 * s3 + 3 * s2) * q1 + (s3 - s2) * h * qd1
+  }
+  let lo = Math.min(q0, q1); let hi = Math.max(q0, q1)
+  // qd numerator: A s^2 + B s + C = 0
+  const A = 6 * (q0 - q1) + 3 * h * (qd0 + qd1)
+  const B = -6 * q0 + 6 * q1 + h * (-4 * qd0 - 2 * qd1)
+  const C = h * qd0
+  const roots: number[] = []
+  if (Math.abs(A) < 1e-300) {
+    if (Math.abs(B) > 0) roots.push(-C / B)
+  } else {
+    const disc = B * B - 4 * A * C
+    if (disc >= 0) {
+      const sq = Math.sqrt(disc)
+      roots.push((-B - sq) / (2 * A), (-B + sq) / (2 * A))
+    }
+  }
+  for (const s of roots) {
+    if (s > 0 && s < 1) {
+      const v = qAt(s)
+      if (v < lo) lo = v
+      if (v > hi) hi = v
+    }
+  }
+  return [lo, hi]
 }

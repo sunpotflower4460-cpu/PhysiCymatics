@@ -75,11 +75,11 @@ self.onmessage = (ev: MessageEvent<SandWorkerIn>) => {
       speedEma = 0
       postSnapshot()
     } else if (msg.type === 'setScore') {
-      if (tsim) { tsim.plate.setScore(msg.score, tsim.t); postSnapshot() }
+      if (tsim) { tsim.wakeAll(); tsim.plate.setScore(msg.score, tsim.t); tsim.refreshForceBounds(); postSnapshot() }
     } else if (msg.type === 'setFrequency') {
-      if (tsim) { tsim.plate.setFrequency(msg.hz, tsim.t); postSnapshot() }
+      if (tsim) { tsim.wakeAll(); tsim.plate.setFrequency(msg.hz, tsim.t); tsim.refreshForceBounds(); postSnapshot() }
     } else if (msg.type === 'setDrive') {
-      if (tsim) { tsim.plate.setDrive(msg.driveXY[0], msg.driveXY[1]); postSnapshot() }
+      if (tsim) { tsim.wakeAll(); tsim.plate.setDrive(msg.driveXY[0], msg.driveXY[1]); tsim.refreshForceBounds(); postSnapshot() }
     } else if (msg.type === 'play') {
       if ((sim || tsim) && !timer) { lastTickMs = 0; debtSteps = 0; timer = setInterval(tick, 33) }
     } else if (msg.type === 'pause') {

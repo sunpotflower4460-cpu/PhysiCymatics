@@ -122,7 +122,7 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
           <div className="absolute bottom-4 w-[90%] left-[5%] p-2 rounded bg-[var(--void)]/70 backdrop-blur border border-[var(--hair)] text-[10px] font-mono text-[var(--text2)]">
             物理時刻 {snap.t.toFixed(1)}s ／ 残り {snap.aliveCount}/{snap.initialCount}粒
             {speed > 0 && <> ／ 物理の進み ×{speed.toFixed(2)}{speed < 0.95 ? '（実時間より遅い）' : ''}</>}
-            {ts && <> ／ 駆動 {ts.freqHz ? `${ts.freqHz.toFixed(1)}Hz` : '無音区間'} ／ 振幅尺度 {ts.ampUm.toFixed(0)}µm</>}
+            {ts && <> ／ 駆動 {ts.freqHz ? `${ts.freqHz.toFixed(1)}Hz` : '無音区間'} ／ 振幅尺度 {ts.ampUm.toFixed(0)}µm ／ 休止 {Math.round(ts.sleepingFrac * 100)}%</>}
             <br />{mode === 'single' ? `Γ=${gamma}・約152Hz単一モード。` : '同じscoreから音と駆動を生成。'}粒子同士の衝突は未計算。
           </div>
         )}
