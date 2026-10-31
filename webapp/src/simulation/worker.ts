@@ -3,12 +3,13 @@
 // many whole steps as fit the time budget and reports the measured speed.
 // Snapshots are fresh Float32 copies (transferable); the Float64 state stays here.
 import { createSim, type SandSim } from './sand'
-import { createTransientSim, type TransientSandSim } from './transientSand'
+import { createTransientSim, createTransientSimShard, type TransientSandSim } from './transientSand'
 import type { PerformanceScore } from './sequence'
 
 export type SandWorkerIn =
   | { type: 'init'; gamma: number; count: number; seed: number }
-  | { type: 'initPerformance'; score: PerformanceScore; count: number; seed: number; driveXY: [number, number] }
+  | { type: 'initPerformance'; score: PerformanceScore; count: number; seed: number; driveXY: [number, number]; shardIndex?: number; shardCount?: number; generation?: number }
+  | { type: 'stepBatch'; steps: number; generation: number; speed: number }
   | { type: 'setScore'; score: PerformanceScore }
   | { type: 'setFrequency'; hz: number }
   | { type: 'setDrive'; driveXY: [number, number] }
@@ -21,13 +22,17 @@ let timer: ReturnType<typeof setInterval> | null = null
 let speedEma = 0
 let lastTickMs = 0
 let debtSteps = 0
+// M6-4B pool mode: when generation is set, an external coordinator drives
+// step batches; the internal timer stays off.
+let generation = -1
+let shardIndex = 0
 
 function postSnapshot(): void {
   if (tsim) {
     // M6-3C: differential frame (unchanged display xy is not resent).
     const frame = tsim.frameDelta(speedEma)
     ;(self as unknown as Worker).postMessage(
-      { type: 'frame', kind: 'transient', frame },
+      { type: 'frame', kind: 'transient', frame, generation, shardIndex, dtNow: tsim.dtNow() },
       [frame.xy.buffer, frame.idx.buffer, frame.dead.buffer] as unknown as Transferable[])
     return
   }
@@ -73,9 +78,19 @@ self.onmessage = (ev: MessageEvent<SandWorkerIn>) => {
     } else if (msg.type === 'initPerformance') {
       if (timer) { clearInterval(timer); timer = null }
       sim = null
-      tsim = createTransientSim(msg.score, msg.count, msg.seed, msg.driveXY)
+      generation = msg.generation ?? -1
+      shardIndex = msg.shardIndex ?? 0
+      tsim = msg.shardCount && msg.shardCount > 1
+        ? createTransientSimShard(msg.score, msg.count, msg.seed, msg.driveXY, { enabled: true }, shardIndex, msg.shardCount)
+        : createTransientSim(msg.score, msg.count, msg.seed, msg.driveXY)
       speedEma = 0
       postSnapshot()
+    } else if (msg.type === 'stepBatch') {
+      if (tsim && msg.generation === generation) {
+        speedEma = msg.speed
+        for (let s = 0; s < msg.steps; s++) tsim.step()
+        postSnapshot()
+      }
     } else if (msg.type === 'setScore') {
       if (tsim) { tsim.wakeAll(); tsim.plate.setScore(msg.score, tsim.t); tsim.refreshForceBounds(); postSnapshot() }
     } else if (msg.type === 'setFrequency') {
@@ -83,7 +98,8 @@ self.onmessage = (ev: MessageEvent<SandWorkerIn>) => {
     } else if (msg.type === 'setDrive') {
       if (tsim) { tsim.wakeAll(); tsim.plate.setDrive(msg.driveXY[0], msg.driveXY[1]); tsim.refreshForceBounds(); postSnapshot() }
     } else if (msg.type === 'play') {
-      if ((sim || tsim) && !timer) { lastTickMs = 0; debtSteps = 0; timer = setInterval(tick, 33) }
+      if (generation >= 0) { /* pool-driven: coordinator sends stepBatch */ }
+      else if ((sim || tsim) && !timer) { lastTickMs = 0; debtSteps = 0; timer = setInterval(tick, 33) }
     } else if (msg.type === 'pause') {
       if (timer) { clearInterval(timer); timer = null }
       postSnapshot()

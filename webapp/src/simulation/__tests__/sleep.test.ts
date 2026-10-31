@@ -2,7 +2,7 @@
 // counts), sleep must actually engage, input changes must invalidate it.
 import { describe, it, expect } from 'vitest'
 import { singleToneScore, type PerformanceScore } from '../sequence'
-import { TransientSandSim, createTransientSim, calibratedForceN } from '../transientSand'
+import { TransientSandSim, createTransientSim, createTransientSimShard, shardRanges, calibratedForceN } from '../transientSand'
 import { TransientPlate, hermiteQRange } from '../plateTransient'
 import { initialState } from '../sand'
 
@@ -19,6 +19,95 @@ function maxPosDiff(a: TransientSandSim, b: TransientSandSim): number {
   }
   return m
 }
+
+describe('M6-4B shard equivalence (in-process replicas)', () => {
+  it('K shards stepped in lockstep reproduce the single sim bitwise', () => {
+    const score = singleToneScore(152, calibratedForceN(), 30)
+    const N = 90
+    for (const K of [2, 3, 4]) {
+      const whole = createTransientSim(score, N, 7, [0, 0], { enabled: true })
+      const shards = Array.from({ length: K }, (_, k) =>
+        createTransientSimShard(score, N, 7, [0, 0], { enabled: true }, k, K))
+      // Same ensemble: merged initial positions equal the single sim's.
+      const ranges = shardRanges(N, K)
+      shards.forEach((s, k) => {
+        const [a] = ranges[k]
+        for (let i = 0; i < s.state.id.length; i++) {
+          expect(s.state.id[i]).toBe(a + i)
+          expect(s.state.x[i]).toBe(whole.state.x[a + i])
+          expect(s.state.y[i]).toBe(whole.state.y[a + i])
+        }
+      })
+      const STEPS = 1500
+      for (let s = 0; s < STEPS; s++) {
+        whole.step()
+        for (const sh of shards) sh.step()
+        if (s === 749) { // mid-run input change at the same step boundary
+          whole.wakeAll(); whole.plate.setFrequency(649, whole.t)
+          for (const sh of shards) { sh.wakeAll(); sh.plate.setFrequency(649, sh.t) }
+        }
+      }
+      whole.materializeAll()
+      let bSum = 0; let dSum = 0
+      shards.forEach((s, k) => {
+        s.materializeAll()
+        bSum += s.nBounce; dSum += s.nDetach
+        const [a] = ranges[k]
+        for (let i = 0; i < s.state.id.length; i++) {
+          const g = a + i
+          expect(s.state.x[i]).toBe(whole.state.x[g])
+          expect(s.state.y[i]).toBe(whole.state.y[g])
+          expect(s.state.z[i]).toBe(whole.state.z[g])
+          expect(s.state.vz[i]).toBe(whole.state.vz[g])
+          expect(s.state.sitting[i]).toBe(whole.state.sitting[g])
+          expect(s.state.alive[i]).toBe(whole.state.alive[g])
+        }
+      })
+      expect(bSum).toBe(whole.nBounce)
+      expect(dSum).toBe(whole.nDetach)
+    }
+  })
+})
+
+describe('M6-4A surfAt optimization equivalence', () => {
+  it('optimized surfAt is bitwise identical to the reference', () => {
+    const plate = new TransientPlate(singleToneScore(152, calibratedForceN(), 30))
+    const o1 = new Float64Array(5); const o2 = new Float64Array(5)
+    let seed = 4242
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff }
+    const check = (x: number, y: number, tau: number) => {
+      plate.surfAt(x, y, tau, o1)
+      plate.surfAtReference(x, y, tau, o2)
+      for (let k = 0; k < 5; k++) expect(o1[k]).toBe(o2[k])
+    }
+    let t = 0
+    const dt = 1 / (44 * 152)
+    for (let step = 0; step < 60; step++) {
+      plate.beginStep(t, t + dt)
+      // Deterministic boundary points + random points, shared & unique taus.
+      check(0, 0, t); check(plate.a, 0, t + dt); check(-plate.a * 0.99, 0.001, t + dt / 2)
+      check(0.03, -0.04, t + dt * 0.37)
+      for (let k = 0; k < 40; k++) {
+        check((rnd() * 2 - 1) * plate.a, (rnd() * 2 - 1) * plate.a, t + rnd() * dt)
+      }
+      // Repeated same-tau calls exercise the coefficient cache path.
+      for (let k = 0; k < 10; k++) check(rnd() * 0.1 - 0.05, rnd() * 0.1 - 0.05, t + dt)
+      t += dt
+      if (step === 29) plate.setFrequency(649, t)
+    }
+  })
+
+  it('full-sim results unchanged with optimized surfAt (counts + positions)', () => {
+    // The optimized path is the only surfAt now; equivalence to the
+    // reference above plus the existing parity gates cover this. Here we
+    // assert the standard strong-drive counts stay at their pinned values
+    // from the M6-3R benchmark (500 grains, 1s, sleep OFF).
+    const sim = createTransientSim(singleToneScore(152, calibratedForceN(), 30), 500, 7, [0, 0], { enabled: false })
+    sim.advanceTo(1)
+    expect(sim.nBounce).toBe(19357)
+    expect(sim.nDetach).toBe(10947)
+  })
+})
 
 describe('M6-3R audit: scheduler invariants', () => {
   const internals = (sim: TransientSandSim) => sim as unknown as {

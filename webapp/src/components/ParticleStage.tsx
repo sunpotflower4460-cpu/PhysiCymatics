@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { Pause, Play, RotateCcw } from 'lucide-react'
-import { drawParticles, drawFrameCache, FrameCache } from '../rendering/particleRenderer'
+import { drawParticles, drawFrameCache, FrameCache, GlParticleRenderer } from '../rendering/particleRenderer'
 import type { SandSnapshot } from '../simulation/types'
 import type { TransientStats } from '../simulation/transientSand'
 import { calibratedForceN } from '../simulation/transientSand'
+import { TransientPool } from '../simulation/transientPool'
 import type { PerformanceScore } from '../simulation/sequence'
 import { ScoreStreamAudio } from '../audio/scoreWorklet'
 
@@ -29,9 +30,14 @@ function performanceScore(forceN: number): PerformanceScore {
 
 export default function ParticleStage({ seed0 }: { seed0: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const glCanvasRef = useRef<HTMLCanvasElement>(null)
+  const glRef = useRef<GlParticleRenderer | null>(null)
+  const [glFailed, setGlFailed] = useState(
+    () => new URLSearchParams(window.location.search).get('gl') === '0')
   const workerRef = useRef<Worker | null>(null)
   const audioRef = useRef<ScoreStreamAudio | null>(null)
   const frameCacheRef = useRef(new FrameCache())
+  const poolRef = useRef<TransientPool | null>(null)
   const [mode, setMode] = useState<'single' | 'perf'>('single')
   const [playing, setPlaying] = useState(false)
   const [count, setCount] = useState(500)
@@ -61,16 +67,34 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
     }
     wk.onerror = () => { setError('Workerでエラーが起きました'); setPlaying(false) }
     wk.postMessage({ type: 'init', gamma: 80, count: 500, seed: seed0 })
-    return () => { wk.terminate(); workerRef.current = null }
+    const pool = new TransientPool()
+    poolRef.current = pool
+    pool.onBatch = (b) => {
+      b.frames.forEach((f, k) => frameCacheRef.current.apply(f, b.starts[k], b.initialCount))
+      setKind('transient')
+      setSnap({ t: b.t, xy: frameCacheRef.current.xy, aliveCount: b.aliveCount, initialCount: b.initialCount, stats: b.stats as never })
+    }
+    pool.onError = (m) => { setError(m); setPlaying(false) }
+    return () => { wk.terminate(); workerRef.current = null; pool.dispose(); poolRef.current = null }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
-    if (snap && canvasRef.current) {
-      if (kind === 'transient') drawFrameCache(canvasRef.current, frameCacheRef.current, PLATE_A)
-      else drawParticles(canvasRef.current, snap as unknown as SandSnapshot, PLATE_A)
+    if (!snap) return
+    if (kind === 'transient') {
+      if (!glFailed && glCanvasRef.current) {
+        if (!glRef.current || glRef.current.canvas !== glCanvasRef.current) {
+          glRef.current = new GlParticleRenderer(glCanvasRef.current)
+        }
+        if (glRef.current.available && glRef.current.draw(frameCacheRef.current, PLATE_A)) return
+        setGlFailed(true) // fall back to Canvas 2D (separate canvas element)
+        return
+      }
+      if (canvasRef.current) drawFrameCache(canvasRef.current, frameCacheRef.current, PLATE_A)
+    } else if (canvasRef.current) {
+      drawParticles(canvasRef.current, snap as unknown as SandSnapshot, PLATE_A)
     }
-  }, [snap, kind])
+  }, [snap, kind, glFailed])
 
   // Keep audio from running ahead of lagging physics (score time = physics t here).
   useEffect(() => {
@@ -86,35 +110,45 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
   }, [playing, mode, snap])
 
   const post = (m: unknown) => workerRef.current?.postMessage(m)
+  const workerCount = () => {
+    const q = new URLSearchParams(window.location.search).get('workers')
+    if (q) return Math.max(1, Math.min(8, parseInt(q, 10) || 1))
+    return Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1))
+  }
   const initSingle = (g: number, c: number, s: number) => {
     setMode('single'); setGamma(g); setCount(c); setSeed(s); setPlaying(false); setError(null)
+    poolRef.current?.pause()
     void audioRef.current?.pause()
     post({ type: 'init', gamma: g, count: c, seed: s })
   }
   const initPerf = (score: PerformanceScore, c: number, s: number, off: boolean) => {
     setMode('perf'); setCount(c); setSeed(s); setPlaying(false); setError(null)
+    post({ type: 'pause' })
     if (!audioRef.current) audioRef.current = new ScoreStreamAudio()
     void audioRef.current.load(score)
-    post({ type: 'initPerformance', score, count: c, seed: s, driveXY: off ? DRIVE_OFF : DRIVE_CENTER })
+    frameCacheRef.current.reset(c)
+    poolRef.current?.init(score, c, s, off ? DRIVE_OFF : DRIVE_CENTER, workerCount())
   }
   const togglePlay = () => {
     if (playing) {
-      post({ type: 'pause' }); void audioRef.current?.pause(); setPlaying(false)
+      if (mode === 'perf') poolRef.current?.pause()
+      else post({ type: 'pause' })
+      void audioRef.current?.pause(); setPlaying(false)
     } else {
-      post({ type: 'play' })
-      if (mode === 'perf') void audioRef.current?.play()
+      if (mode === 'perf') { poolRef.current?.play(); void audioRef.current?.play() }
+      else post({ type: 'play' })
       setPlaying(true)
     }
   }
   const applyFreq = () => {
     const f = Math.min(2000, Math.max(20, freq))
     setFreq(f)
-    post({ type: 'setFrequency', hz: f })
+    poolRef.current?.setFrequency(f)
     audioRef.current?.setFrequency(f)
   }
   const applyDrive = (off: boolean) => {
     setDriveOff(off)
-    post({ type: 'setDrive', driveXY: off ? DRIVE_OFF : DRIVE_CENTER })
+    poolRef.current?.setDrive(off ? DRIVE_OFF : DRIVE_CENTER)
   }
 
   const ts = kind === 'transient' ? (snap?.stats as unknown as TransientStats) : null
@@ -124,7 +158,9 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
   return (
     <div className="flex flex-col h-full relative">
       <div className="flex-1 relative bg-[var(--void)] overflow-hidden flex items-center justify-center pt-16">
-        <canvas ref={canvasRef} width={360} height={360} className="w-full h-full object-contain" />
+        {kind === 'transient' && !glFailed
+          ? <canvas ref={glCanvasRef} width={360} height={360} className="w-full h-full object-contain" />
+          : <canvas ref={canvasRef} width={360} height={360} className="w-full h-full object-contain" />}
         <div className="absolute top-16 right-4 z-10 flex items-center gap-2 border border-[var(--ok)]/50 bg-[var(--ok)]/10 px-2 py-1 rounded text-[10px] font-mono text-[var(--ok)]">
           {mode === 'single' ? '砂・単一モード（c002）' : '砂・多モード演奏（M3）'}{playing ? ' 実計算中' : ' 一時停止'}
         </div>
