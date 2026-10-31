@@ -20,6 +20,278 @@ function maxPosDiff(a: TransientSandSim, b: TransientSandSim): number {
   return m
 }
 
+describe('M6-3R audit: scheduler invariants', () => {
+  const internals = (sim: TransientSandSim) => sim as unknown as {
+    activeList: Int32Array; activePos: Int32Array; activeCount: number; heapSize: number
+  }
+
+  function checkInvariant(sim: TransientSandSim): void {
+    const s = internals(sim); const st = sim.state
+    const seen = new Set<number>()
+    for (let k = 0; k < s.activeCount; k++) {
+      const i = s.activeList[k]
+      expect(seen.has(i)).toBe(false) // no double registration
+      seen.add(i)
+      expect(s.activePos[i]).toBe(k)
+      expect(st.alive[i]).toBe(1) // no lost particle in the active set
+      expect(sim.sleeping[i]).toBe(0) // no sleeper in the active set
+    }
+    let awakeAlive = 0
+    for (let i = 0; i < st.id.length; i++) {
+      if (st.alive[i] && !sim.sleeping[i]) { awakeAlive++; expect(seen.has(i)).toBe(true) }
+      if (sim.sleeping[i]) expect(sim.wakeT[i]).toBeGreaterThan(sim.t - 1e-12) // never overdue
+    }
+    expect(s.activeCount).toBe(awakeAlive) // nobody skipped by swap-remove
+  }
+
+  it('active-set invariant holds at every step incl. invalidation', () => {
+    const sim = createTransientSim(singleToneScore(152, calibratedForceN() * 0.3, 30), 80, 7, [0, 0], { enabled: true, scheduler: true })
+    for (let k = 0; k < 400; k++) { sim.step(); checkInvariant(sim) }
+    sim.wakeAll(); sim.plate.setFrequency(649, sim.t); checkInvariant(sim)
+    for (let k = 0; k < 400; k++) { sim.step(); checkInvariant(sim) }
+  })
+
+  it('stale heap entries after wakeAll never wake anything', () => {
+    const mk = (scheduler: boolean) => createTransientSim(
+      singleToneScore(152, calibratedForceN() * 0.05, 30), 60, 7, [0, 0], { enabled: true, scheduler })
+    const legacy = mk(false); const sched = mk(true)
+    for (const s of [legacy, sched]) {
+      s.advanceTo(0.25)
+      s.wakeAll(); s.plate.setFrequency(368.6, s.t)
+      s.advanceTo(0.45)
+      s.wakeAll(); s.plate.setFrequency(152, s.t)
+      s.advanceTo(0.6)
+    }
+    expect(sched.nBounce).toBe(legacy.nBounce)
+    expect(sched.nDetach).toBe(legacy.nDetach)
+    expect(sched.wakeCount).toBe(legacy.wakeCount)
+    expect(maxPosDiff(sched, legacy)).toBeLessThan(1e-9)
+  })
+
+  it('lost particles never reactivate and leave the active set', () => {
+    const sim = createTransientSim(singleToneScore(152, 0, 30), 3, 7, [0, 0], { enabled: true, scheduler: true })
+    const st = sim.state; const a = sim.plate.a
+    st.x[0] = a - 0.0005; st.y[0] = 0; st.z[0] = 0.01; st.vx[0] = 20; st.vy[0] = 0; st.vz[0] = 5; st.sitting[0] = 0
+    for (let k = 0; k < 50; k++) sim.step()
+    expect(st.alive[0]).toBe(0)
+    expect(sim.sleeping[0]).toBe(0)
+    expect(internals(sim).activePos[0]).toBe(-1)
+    for (let k = 0; k < 50; k++) sim.step()
+    expect(st.alive[0]).toBe(0)
+    checkInvariant(sim)
+  })
+})
+
+describe('M6-3R audit: region bounds at boundaries', () => {
+  it('deterministic grid containment incl. origin/angular-wrap/bin-edge cells', () => {
+    const plate = new TransientPlate(singleToneScore(152, 0.05, 30))
+    const nd = plate.ndof
+    const lo = new Float64Array(nd); const hi = new Float64Array(nd); const v = new Float64Array(nd)
+    const a = plate.a
+    const ngrid = plate.modes[0].R.length
+    const binW = a / (ngrid - 1)
+    const rEdge = 40 * binW // a radial-bin boundary
+    const cells: [number, number, number, number][] = [
+      [-0.002, 0.002, -0.002, 0.002], // contains origin
+      [-0.11, -0.09, -0.003, 0.003], // angular wrap at theta = +/-pi
+      [rEdge - 0.0015, rEdge + 0.0015, -0.001, 0.001], // radial bin edge
+      [a - 0.004, a, -0.002, 0.002], // outer rim
+      [-a, -a + 0.004, a - 0.004, a], // corner outside disk partially
+      [0.02, 0.05, 0.02, 0.05], // generic interior
+      [-0.05, -0.02, 0.001, 0.004], // near negative x-axis
+    ]
+    for (const [x0, x1, y0, y1] of cells) {
+      plate.cellPhiRanges(x0, x1, y0, y1, lo, hi)
+      for (let kx = 0; kx <= 20; kx++) {
+        for (let ky = 0; ky <= 20; ky++) {
+          const x = x0 + (kx / 20) * (x1 - x0); const y = y0 + (ky / 20) * (y1 - y0)
+          plate.phiAll(x, y, v)
+          for (let j = 0; j < nd; j++) {
+            expect(v[j]).toBeGreaterThanOrEqual(lo[j] - 1e-12)
+            expect(v[j]).toBeLessThanOrEqual(hi[j] + 1e-12)
+          }
+        }
+      }
+    }
+  })
+
+  it('every grid cell of the actual 64x64 layout contains its sample points', () => {
+    const plate = new TransientPlate(singleToneScore(152, 0.05, 30))
+    const nd = plate.ndof
+    const lo = new Float64Array(nd); const hi = new Float64Array(nd); const v = new Float64Array(nd)
+    const a = plate.a; const G = 64; const w = (2 * a) / G
+    for (let gy = 0; gy < G; gy++) {
+      for (let gx = 0; gx < G; gx++) {
+        const x0 = -a + gx * w; const y0 = -a + gy * w
+        plate.cellPhiRanges(x0, x0 + w, y0, y0 + w, lo, hi)
+        for (const fx of [0, 0.25, 0.5, 0.75, 1]) {
+          for (const fy of [0, 0.25, 0.5, 0.75, 1]) {
+            plate.phiAll(x0 + fx * w, y0 + fy * w, v)
+            for (let j = 0; j < nd; j++) {
+              if (v[j] < lo[j] - 1e-12 || v[j] > hi[j] + 1e-12) {
+                throw new Error(`cell ${gx},${gy} dof ${j}: ${v[j]} outside [${lo[j]}, ${hi[j]}]`)
+              }
+            }
+          }
+        }
+      }
+    }
+  })
+
+  it('cell lower bound <= exact lower bound <= cell upper bound', () => {
+    const sim = createTransientSim(singleToneScore(152, calibratedForceN(), 30), 10, 7, [0, 0], { enabled: true, regions: true })
+    sim.step()
+    const s = sim as unknown as {
+      lookCache: { aMin: Float64Array; aMax: Float64Array }
+      cellLb: Float64Array; cellLbHi: Float64Array
+      ensureLookahead: (t: number) => void; ensureCellLb: () => void; cellIndex: (x: number, y: number) => number
+    }
+    s.ensureLookahead(sim.t); s.ensureCellLb()
+    const lc = s.lookCache
+    const phi = new Float64Array(sim.plate.ndof)
+    let seed = 999
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff }
+    for (let k = 0; k < 3000; k++) {
+      const x = (rnd() * 2 - 1) * sim.plate.a; const y = (rnd() * 2 - 1) * sim.plate.a
+      sim.plate.phiAll(x, y, phi)
+      let exact = 0
+      for (let j = 0; j < phi.length; j++) exact += Math.min(phi[j] * lc.aMin[j], phi[j] * lc.aMax[j])
+      const c = s.cellIndex(x, y)
+      expect(s.cellLb[c]).toBeLessThanOrEqual(exact + 1e-9)
+      expect(exact).toBeLessThanOrEqual(s.cellLbHi[c] + 1e-9)
+    }
+  })
+})
+
+describe('M6-3C differential frame transfer', () => {
+  it('reconstructed display positions match snapshot at every frame', () => {
+    const sim = createTransientSim(singleToneScore(152, calibratedForceN() * 0.05, 30), 60, 7, [0, 0], { enabled: true })
+    const n = sim.state.id.length
+    const cacheXy = new Float32Array(n * 2)
+    const cacheAlive = new Uint8Array(n)
+    let lastChanged = -1
+    for (let f = 0; f < 12; f++) {
+      sim.advanceTo(f / 30)
+      const frame = sim.frameDelta()
+      if (f === 0) expect(frame.full).toBe(true)
+      for (let k = 0; k < frame.idx.length; k++) {
+        cacheXy[2 * frame.idx[k]] = frame.xy[2 * k]
+        cacheXy[2 * frame.idx[k] + 1] = frame.xy[2 * k + 1]
+        cacheAlive[frame.idx[k]] = 1
+      }
+      for (const dIdx of frame.dead) cacheAlive[dIdx] = 0
+      lastChanged = frame.idx.length + frame.dead.length
+      // Reference: full snapshot at the same physics time.
+      const snap = sim.snapshot()
+      expect(frame.t).toBe(snap.t)
+      expect(frame.aliveCount).toBe(snap.aliveCount)
+      let k2 = 0
+      for (let i = 0; i < n; i++) {
+        if (!sim.state.alive[i]) { expect(cacheAlive[i]).toBe(0); continue }
+        expect(cacheAlive[i]).toBe(1)
+        expect(cacheXy[2 * i]).toBe(snap.xy[k2])
+        expect(cacheXy[2 * i + 1]).toBe(snap.xy[k2 + 1])
+        k2 += 2
+      }
+    }
+    expect(lastChanged).toBeGreaterThanOrEqual(0)
+  })
+
+  it('reset resends a full frame; deaths are reported exactly once', () => {
+    const sim = createTransientSim(singleToneScore(152, 0, 30), 3, 7, [0, 0], { enabled: true })
+    const st = sim.state; const a = sim.plate.a
+    const f0 = sim.frameDelta()
+    expect(f0.full).toBe(true)
+    expect(f0.idx.length).toBe(3)
+    st.x[0] = a - 0.0005; st.y[0] = 0; st.z[0] = 0.01; st.vx[0] = 20; st.vz[0] = 5; st.sitting[0] = 0
+    let deadSeen = 0
+    for (let k = 0; k < 30; k++) {
+      sim.step()
+      const f = sim.frameDelta()
+      deadSeen += [...f.dead].filter((d) => d === 0).length
+      // A dead slot is never sent as a position update afterwards.
+      if (st.alive[0] === 0) expect([...f.idx]).not.toContain(0)
+    }
+    expect(deadSeen).toBe(1)
+    sim.resetFrameDelta()
+    const fr = sim.frameDelta()
+    expect(fr.full).toBe(true)
+    expect(fr.idx.length).toBe(sim.nAlive)
+  })
+})
+
+describe('M6-3B region-shared sitting bounds', () => {
+  it('cellPhiRanges contains phiAll at every sampled point', () => {
+    const plate = new TransientPlate(singleToneScore(152, 0.05, 30))
+    const nd = plate.ndof
+    const lo = new Float64Array(nd); const hi = new Float64Array(nd); const v = new Float64Array(nd)
+    let seed = 12345
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff }
+    const a = plate.a
+    const cells: [number, number, number, number][] = [
+      [-a, -a / 2, -a, -a / 2], [0, a / 3, 0, a / 3], [-0.01, 0.01, -0.01, 0.01],
+      [a * 0.7, a, -a * 0.2, 0], [-a, 0, a * 0.5, a], [0.001, 0.01, -0.05, -0.04],
+    ]
+    for (const [x0, x1, y0, y1] of cells) {
+      plate.cellPhiRanges(x0, x1, y0, y1, lo, hi)
+      for (let k = 0; k < 2000; k++) {
+        const x = x0 + rnd() * (x1 - x0); const y = y0 + rnd() * (y1 - y0)
+        plate.phiAll(x, y, v)
+        for (let j = 0; j < nd; j++) {
+          expect(v[j]).toBeGreaterThanOrEqual(lo[j] - 1e-12)
+          expect(v[j]).toBeLessThanOrEqual(hi[j] + 1e-12)
+        }
+      }
+    }
+  })
+
+  it('regions on/off reproduce the same physics and regions engage', () => {
+    const mk = (regions: boolean) => createTransientSim(
+      singleToneScore(152, calibratedForceN() * 0.05, 30), 60, 7, [0, 0],
+      { enabled: true, scheduler: true, regions })
+    const off = mk(false); const on = mk(true)
+    off.advanceTo(0.6); on.advanceTo(0.6)
+    expect(on.regionChecks).toBeGreaterThan(0)
+    expect(on.nBounce).toBe(off.nBounce)
+    expect(on.nDetach).toBe(off.nDetach)
+    expect(on.nAlive).toBe(off.nAlive)
+    expect(maxPosDiff(on, off)).toBeLessThan(5e-6)
+  })
+})
+
+describe('M6-3A scheduler equivalence vs legacy full scan', () => {
+  it('same counts, same trajectories, same skipped count', () => {
+    const legacy = createTransientSim(singleToneScore(152, calibratedForceN(), 30), 60, 7, [0, 0], { enabled: true, scheduler: false })
+    const sched = createTransientSim(singleToneScore(152, calibratedForceN(), 30), 60, 7, [0, 0], { enabled: true, scheduler: true })
+    legacy.advanceTo(0.6); sched.advanceTo(0.6)
+    expect(sched.skippedUpdates).toBeGreaterThan(0)
+    expect(sched.skippedUpdates).toBe(legacy.skippedUpdates)
+    expect(sched.nBounce).toBe(legacy.nBounce)
+    expect(sched.nDetach).toBe(legacy.nDetach)
+    expect(sched.nEventCap).toBe(legacy.nEventCap)
+    expect(sched.wakeCount).toBe(legacy.wakeCount)
+    expect(sched.nAlive).toBe(legacy.nAlive)
+    // Per-particle math is independent of processing order, so results
+    // agree to floating-point identity level, not just tolerance level.
+    expect(maxPosDiff(sched, legacy)).toBeLessThan(1e-9)
+    expect([...sched.state.sitting]).toEqual([...legacy.state.sitting])
+  })
+
+  it('scheduler survives input invalidation and edge loss', () => {
+    const sim = createTransientSim(singleToneScore(152, calibratedForceN() * 0.05, 30), 60, 7, [0, 0], { enabled: true, scheduler: true })
+    sim.advanceTo(0.3)
+    sim.wakeAll()
+    sim.plate.setFrequency(368.6, sim.t)
+    sim.advanceTo(0.5)
+    expect(Math.abs(sim.t - 0.5)).toBeLessThan(1e-12)
+    expect(sim.stats().sleepingFrac).toBeLessThanOrEqual(1)
+    for (let i = 0; i < sim.state.id.length; i++) {
+      expect(Number.isFinite(sim.state.x[i])).toBe(true)
+      expect(Number.isFinite(sim.state.z[i])).toBe(true)
+    }
+  })
+})
+
 describe('M6-2 sleep parity vs baseline', () => {
   it('strong drive 152Hz: same trajectories and counts, sleep engages', () => {
     const off = run(false)

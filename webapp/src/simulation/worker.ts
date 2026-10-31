@@ -24,9 +24,11 @@ let debtSteps = 0
 
 function postSnapshot(): void {
   if (tsim) {
-    const snap = tsim.snapshot(speedEma)
+    // M6-3C: differential frame (unchanged display xy is not resent).
+    const frame = tsim.frameDelta(speedEma)
     ;(self as unknown as Worker).postMessage(
-      { type: 'snapshot', kind: 'transient', snap }, [snap.xy.buffer] as unknown as Transferable[])
+      { type: 'frame', kind: 'transient', frame },
+      [frame.xy.buffer, frame.idx.buffer, frame.dead.buffer] as unknown as Transferable[])
     return
   }
   if (!sim) return
