@@ -133,8 +133,9 @@ export class TransientSandSim {
         // Upper bound on the exact per-particle term min(phi*a0, phi*a1)
         // for phi in [plo, phi]: the term is piecewise linear in phi with
         // a kink at 0, so its max is at an endpoint or at 0.
-        const g = (v: number) => Math.min(v * a0, v * a1)
-        ub += Math.max(g(plo), g(phi), plo <= 0 && 0 <= phi ? 0 : -Infinity)
+        const gLo = Math.min(plo * a0, plo * a1)
+        const gHi = Math.min(phi * a0, phi * a1)
+        ub += Math.max(gLo, gHi, plo <= 0 && 0 <= phi ? 0 : -Infinity)
       }
       out[c] = lb
       outHi[c] = ub
@@ -142,6 +143,9 @@ export class TransientSandSim {
   }
 
   private cellIndex(x: number, y: number): number {
+    // Keep the division form: the returned cell must be the one whose
+    // closed rectangle contains (x, y) under the same arithmetic used
+    // to build the grid; boundary points belong to both neighbours.
     const G = TransientSandSim.GRID; const a = this.plate.a
     const gx = Math.min(G - 1, Math.max(0, Math.floor(((x + a) / (2 * a)) * G)))
     const gy = Math.min(G - 1, Math.max(0, Math.floor(((y + a) / (2 * a)) * G)))
