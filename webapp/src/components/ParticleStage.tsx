@@ -4,6 +4,7 @@ import { drawParticles, drawFrameCache, FrameCache } from '../rendering/particle
 import type { SandSnapshot } from '../simulation/types'
 import type { TransientStats } from '../simulation/transientSand'
 import { calibratedForceN } from '../simulation/transientSand'
+import { TransientPool } from '../simulation/transientPool'
 import type { PerformanceScore } from '../simulation/sequence'
 import { ScoreStreamAudio } from '../audio/scoreWorklet'
 
@@ -32,6 +33,7 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
   const workerRef = useRef<Worker | null>(null)
   const audioRef = useRef<ScoreStreamAudio | null>(null)
   const frameCacheRef = useRef(new FrameCache())
+  const poolRef = useRef<TransientPool | null>(null)
   const [mode, setMode] = useState<'single' | 'perf'>('single')
   const [playing, setPlaying] = useState(false)
   const [count, setCount] = useState(500)
@@ -61,7 +63,15 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
     }
     wk.onerror = () => { setError('Workerでエラーが起きました'); setPlaying(false) }
     wk.postMessage({ type: 'init', gamma: 80, count: 500, seed: seed0 })
-    return () => { wk.terminate(); workerRef.current = null }
+    const pool = new TransientPool()
+    poolRef.current = pool
+    pool.onBatch = (b) => {
+      b.frames.forEach((f, k) => frameCacheRef.current.apply(f, b.starts[k], b.initialCount))
+      setKind('transient')
+      setSnap({ t: b.t, xy: frameCacheRef.current.xy, aliveCount: b.aliveCount, initialCount: b.initialCount, stats: b.stats as never })
+    }
+    pool.onError = (m) => { setError(m); setPlaying(false) }
+    return () => { wk.terminate(); workerRef.current = null; pool.dispose(); poolRef.current = null }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -86,35 +96,45 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
   }, [playing, mode, snap])
 
   const post = (m: unknown) => workerRef.current?.postMessage(m)
+  const workerCount = () => {
+    const q = new URLSearchParams(window.location.search).get('workers')
+    if (q) return Math.max(1, Math.min(8, parseInt(q, 10) || 1))
+    return Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1))
+  }
   const initSingle = (g: number, c: number, s: number) => {
     setMode('single'); setGamma(g); setCount(c); setSeed(s); setPlaying(false); setError(null)
+    poolRef.current?.pause()
     void audioRef.current?.pause()
     post({ type: 'init', gamma: g, count: c, seed: s })
   }
   const initPerf = (score: PerformanceScore, c: number, s: number, off: boolean) => {
     setMode('perf'); setCount(c); setSeed(s); setPlaying(false); setError(null)
+    post({ type: 'pause' })
     if (!audioRef.current) audioRef.current = new ScoreStreamAudio()
     void audioRef.current.load(score)
-    post({ type: 'initPerformance', score, count: c, seed: s, driveXY: off ? DRIVE_OFF : DRIVE_CENTER })
+    frameCacheRef.current.reset(c)
+    poolRef.current?.init(score, c, s, off ? DRIVE_OFF : DRIVE_CENTER, workerCount())
   }
   const togglePlay = () => {
     if (playing) {
-      post({ type: 'pause' }); void audioRef.current?.pause(); setPlaying(false)
+      if (mode === 'perf') poolRef.current?.pause()
+      else post({ type: 'pause' })
+      void audioRef.current?.pause(); setPlaying(false)
     } else {
-      post({ type: 'play' })
-      if (mode === 'perf') void audioRef.current?.play()
+      if (mode === 'perf') { poolRef.current?.play(); void audioRef.current?.play() }
+      else post({ type: 'play' })
       setPlaying(true)
     }
   }
   const applyFreq = () => {
     const f = Math.min(2000, Math.max(20, freq))
     setFreq(f)
-    post({ type: 'setFrequency', hz: f })
+    poolRef.current?.setFrequency(f)
     audioRef.current?.setFrequency(f)
   }
   const applyDrive = (off: boolean) => {
     setDriveOff(off)
-    post({ type: 'setDrive', driveXY: off ? DRIVE_OFF : DRIVE_CENTER })
+    poolRef.current?.setDrive(off ? DRIVE_OFF : DRIVE_CENTER)
   }
 
   const ts = kind === 'transient' ? (snap?.stats as unknown as TransientStats) : null

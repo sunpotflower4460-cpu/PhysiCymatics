@@ -17,21 +17,54 @@ export class FrameCache {
   xy: Float32Array = new Float32Array(0)
   alive: Uint8Array = new Uint8Array(0)
   t = 0
+  // Changed slot span of the last applied frame(s), for partial GPU
+  // buffer updates; -1 when nothing changed. Reset by consumeSpan().
+  private spanLo = -1
+  private spanHi = -1
 
-  apply(frame: TransientFrame): void {
-    const n = frame.initialCount
-    if (frame.full || this.xy.length !== n * 2) {
-      this.xy = new Float32Array(n * 2)
-      this.alive = new Uint8Array(n)
+  reset(n: number): void {
+    this.xy = new Float32Array(n * 2)
+    this.alive = new Uint8Array(n)
+    this.t = 0
+    this.spanLo = n > 0 ? 0 : -1
+    this.spanHi = n > 0 ? n - 1 : -1
+  }
+
+  consumeSpan(): [number, number] {
+    const r: [number, number] = [this.spanLo, this.spanHi]
+    this.spanLo = -1; this.spanHi = -1
+    return r
+  }
+
+  /** Apply a (possibly sharded) delta frame. offset is the shard's global
+   *  start index; total is the global particle count. A full frame from a
+   *  shard only rewrites its own range. */
+  apply(frame: TransientFrame, offset = 0, total?: number): void {
+    const n = total ?? frame.initialCount
+    if (this.xy.length !== n * 2) this.reset(n)
+    if (frame.full) {
+      // Clear only this frame's range before applying its living slots.
+      for (let i = offset; i < offset + frame.initialCount; i++) this.alive[i] = 0
+      if (frame.initialCount > 0) this.touch(offset, offset + frame.initialCount - 1)
     }
     for (let k = 0; k < frame.idx.length; k++) {
-      const i = frame.idx[k]
+      const i = offset + frame.idx[k]
       this.xy[2 * i] = frame.xy[2 * k]
       this.xy[2 * i + 1] = frame.xy[2 * k + 1]
       this.alive[i] = 1
+      this.touch(i, i)
     }
-    for (let k = 0; k < frame.dead.length; k++) this.alive[frame.dead[k]] = 0
+    for (let k = 0; k < frame.dead.length; k++) {
+      const i = offset + frame.dead[k]
+      this.alive[i] = 0
+      this.touch(i, i)
+    }
     this.t = frame.t
+  }
+
+  private touch(lo: number, hi: number): void {
+    if (this.spanLo < 0 || lo < this.spanLo) this.spanLo = lo
+    if (hi > this.spanHi) this.spanHi = hi
   }
 }
 

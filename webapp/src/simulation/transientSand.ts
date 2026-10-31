@@ -704,6 +704,41 @@ export function createTransientSim(
   return new TransientSandSim(plate, initialState(plate.a, count, seed), DEFAULT_PARAMS, sleep)
 }
 
+/** Contiguous balanced shard ranges [start, end) over n particles. */
+export function shardRanges(n: number, shards: number): [number, number][] {
+  const out: [number, number][] = []
+  const base = Math.floor(n / shards)
+  const rem = n % shards
+  let s = 0
+  for (let k = 0; k < shards; k++) {
+    const len = base + (k < rem ? 1 : 0)
+    out.push([s, s + len])
+    s += len
+  }
+  return out
+}
+
+/** M6-4B: one shard of the SAME (count, seed) particle ensemble. The full
+ *  initial state is generated exactly as in createTransientSim, then
+ *  compacted to this shard's contiguous slice; particle IDs (state.id)
+ *  keep their global values. The plate is replicated (its evolution is
+ *  deterministic and particle-independent), so stepping every shard the
+ *  same number of steps reproduces the single-sim trajectories. */
+export function createTransientSimShard(
+  score: PerformanceScore, count: number, seed: number, driveXY: [number, number],
+  sleep: SleepOptions, shardIndex: number, shardCount: number,
+): TransientSandSim {
+  const plate = new TransientPlate(score, driveXY)
+  const full = initialState(plate.a, count, seed)
+  const [a, b] = shardRanges(count, shardCount)[shardIndex]
+  const st: ParticleState = {
+    x: full.x.slice(a, b), y: full.y.slice(a, b), z: full.z.slice(a, b),
+    vx: full.vx.slice(a, b), vy: full.vy.slice(a, b), vz: full.vz.slice(a, b),
+    alive: full.alive.slice(a, b), sitting: full.sitting.slice(a, b), id: full.id.slice(a, b),
+  }
+  return new TransientSandSim(plate, st, DEFAULT_PARAMS, sleep)
+}
+
 /** Force giving ~860 um steady amplitude at the 152 Hz mode (center drive). */
 export function calibratedForceN(driveXY: [number, number] = [0, 0]): number {
   const probe = new TransientPlate(

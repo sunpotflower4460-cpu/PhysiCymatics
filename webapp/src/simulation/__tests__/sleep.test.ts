@@ -2,7 +2,7 @@
 // counts), sleep must actually engage, input changes must invalidate it.
 import { describe, it, expect } from 'vitest'
 import { singleToneScore, type PerformanceScore } from '../sequence'
-import { TransientSandSim, createTransientSim, calibratedForceN } from '../transientSand'
+import { TransientSandSim, createTransientSim, createTransientSimShard, shardRanges, calibratedForceN } from '../transientSand'
 import { TransientPlate, hermiteQRange } from '../plateTransient'
 import { initialState } from '../sand'
 
@@ -19,6 +19,55 @@ function maxPosDiff(a: TransientSandSim, b: TransientSandSim): number {
   }
   return m
 }
+
+describe('M6-4B shard equivalence (in-process replicas)', () => {
+  it('K shards stepped in lockstep reproduce the single sim bitwise', () => {
+    const score = singleToneScore(152, calibratedForceN(), 30)
+    const N = 90
+    for (const K of [2, 3, 4]) {
+      const whole = createTransientSim(score, N, 7, [0, 0], { enabled: true })
+      const shards = Array.from({ length: K }, (_, k) =>
+        createTransientSimShard(score, N, 7, [0, 0], { enabled: true }, k, K))
+      // Same ensemble: merged initial positions equal the single sim's.
+      const ranges = shardRanges(N, K)
+      shards.forEach((s, k) => {
+        const [a] = ranges[k]
+        for (let i = 0; i < s.state.id.length; i++) {
+          expect(s.state.id[i]).toBe(a + i)
+          expect(s.state.x[i]).toBe(whole.state.x[a + i])
+          expect(s.state.y[i]).toBe(whole.state.y[a + i])
+        }
+      })
+      const STEPS = 1500
+      for (let s = 0; s < STEPS; s++) {
+        whole.step()
+        for (const sh of shards) sh.step()
+        if (s === 749) { // mid-run input change at the same step boundary
+          whole.wakeAll(); whole.plate.setFrequency(649, whole.t)
+          for (const sh of shards) { sh.wakeAll(); sh.plate.setFrequency(649, sh.t) }
+        }
+      }
+      whole.materializeAll()
+      let bSum = 0; let dSum = 0
+      shards.forEach((s, k) => {
+        s.materializeAll()
+        bSum += s.nBounce; dSum += s.nDetach
+        const [a] = ranges[k]
+        for (let i = 0; i < s.state.id.length; i++) {
+          const g = a + i
+          expect(s.state.x[i]).toBe(whole.state.x[g])
+          expect(s.state.y[i]).toBe(whole.state.y[g])
+          expect(s.state.z[i]).toBe(whole.state.z[g])
+          expect(s.state.vz[i]).toBe(whole.state.vz[g])
+          expect(s.state.sitting[i]).toBe(whole.state.sitting[g])
+          expect(s.state.alive[i]).toBe(whole.state.alive[g])
+        }
+      })
+      expect(bSum).toBe(whole.nBounce)
+      expect(dSum).toBe(whole.nDetach)
+    }
+  })
+})
 
 describe('M6-4A surfAt optimization equivalence', () => {
   it('optimized surfAt is bitwise identical to the reference', () => {
