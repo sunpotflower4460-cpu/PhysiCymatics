@@ -8,6 +8,9 @@ import { ScoreSignal, type PerformanceScore } from './sequence'
 interface ModeRow { m: number; root_idx: number; f_hz: number; M_kg: number; R: number[]; dR_drho: number[] }
 interface BasisData { a_m: number; ngrid: number; zeta: number; modes: ModeRow[] }
 const BD = basisData as unknown as BasisData
+// Reused trig-recurrence scratch (surfAt/phiAll are synchronous).
+const CM = new Float64Array(6)
+const SM = new Float64Array(6)
 
 export interface Dof { mode: number; kind: 'cos' | 'sin' }
 
@@ -26,6 +29,20 @@ export class TransientPlate {
   private seg: { t0: number; t1: number; q0: Float64Array; qd0: Float64Array; q1: Float64Array; qd1: Float64Array } | null = null
   private R: Float64Array[]; private dR: Float64Array[]
   private ng1 = BD.ngrid - 1
+  // M6-4A hot-path tables: flattened R and dR/a (same float values as the
+  // per-call divisions), typed DOF descriptors, and a direct-mapped cache
+  // of per-tau Hermite modal coefficients (exact tau key, cleared per
+  // segment). Arithmetic and summation order are unchanged.
+  private Rflat!: Float64Array
+  private dRflat!: Float64Array
+  private dofMode!: Int32Array
+  private dofM!: Int32Array
+  private dofCos!: Uint8Array
+  private static readonly TAU_SLOTS = 64
+  private tauSlotTau = new Float64Array(TransientPlate.TAU_SLOTS).fill(NaN)
+  private tauQ!: Float64Array
+  private tauQd!: Float64Array
+  private tauQdd!: Float64Array
   signal: ScoreSignal
   epoch = 0 // score time = physics t - epoch (live score replacement)
 
@@ -45,6 +62,24 @@ export class TransientPlate {
     this.phiDrive = new Float64Array(n)
     this.R = this.modes.map((m) => Float64Array.from(m.R))
     this.dR = this.modes.map((m) => Float64Array.from(m.dR_drho))
+    const stride = BD.ngrid
+    this.Rflat = new Float64Array(this.modes.length * stride)
+    this.dRflat = new Float64Array(this.modes.length * stride)
+    this.modes.forEach((md, mi) => {
+      for (let k = 0; k < stride; k++) {
+        this.Rflat[mi * stride + k] = md.R[k]
+        this.dRflat[mi * stride + k] = md.dR_drho[k] / this.a
+      }
+    })
+    this.dofMode = new Int32Array(n); this.dofM = new Int32Array(n); this.dofCos = new Uint8Array(n)
+    this.dofs.forEach((d, j) => {
+      this.dofMode[j] = d.mode
+      this.dofM[j] = this.modes[d.mode].m
+      this.dofCos[j] = d.kind === 'cos' ? 1 : 0
+    })
+    this.tauQ = new Float64Array(TransientPlate.TAU_SLOTS * n)
+    this.tauQd = new Float64Array(TransientPlate.TAU_SLOTS * n)
+    this.tauQdd = new Float64Array(TransientPlate.TAU_SLOTS * n)
     this.setDrive(driveXY[0], driveXY[1])
   }
 
@@ -174,15 +209,16 @@ export class TransientPlate {
     const idx = Math.min((r * (this.ng1 / this.a)) | 0, this.ng1)
     const rs = r < 1e-12 ? 1e-12 : r
     const c = x / rs; const sn = y / rs
-    const cm = [1, c, 0, 0, 0]; const sm = [0, sn, 0, 0, 0]
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
     for (let m = 2; m <= 4; m++) {
-      cm[m] = cm[m - 1] * c - sm[m - 1] * sn
-      sm[m] = sm[m - 1] * c + cm[m - 1] * sn
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
     }
+    const stride = BD.ngrid
     for (let j = 0; j < this.ndof; j++) {
-      const d = this.dofs[j]; const m = this.modes[d.mode].m
-      const R = this.R[d.mode][idx]
-      out[j] = m === 0 ? R : d.kind === 'cos' ? R * cm[m] : R * sm[m]
+      const m = this.dofM[j]
+      const R = this.Rflat[this.dofMode[j] * stride + idx]
+      out[j] = m === 0 ? R : this.dofCos[j] ? R * CM[m] : R * SM[m]
     }
   }
 
@@ -239,10 +275,81 @@ export class TransientPlate {
       hb += Math.max(Math.abs(q0[j]), Math.abs(q[j])) + (4 / 27) * (t1 - t0) * (Math.abs(qd0[j]) + Math.abs(qd[j]))
     }
     this.hBound = hb
+    this.tauSlotTau.fill(NaN)
   }
 
-  /** (h, hx, hy, uz, wtt) at (x, y, tau) inside the current segment. */
+  /** Per-tau Hermite modal coefficients (q, qd, qdd per DOF) for the
+   *  current segment, direct-mapped cache keyed by exact tau. Returns
+   *  the slot base offset into tauQ/tauQd/tauQdd. The arithmetic is the
+   *  same expressions surfAtReference evaluates per DOF. */
+  private modalCoeffs(tau: number): number {
+    const seg = this.seg!
+    const slots = TransientPlate.TAU_SLOTS
+    const hbits = (tau * 2654435761) | 0
+    const slot = (hbits ^ (hbits >>> 3)) & (slots - 1)
+    const n = this.ndof
+    const base = slot * n
+    if (this.tauSlotTau[slot] === tau) return base
+    this.tauSlotTau[slot] = tau
+    const hseg = seg.t1 - seg.t0
+    const s = (tau - seg.t0) / hseg
+    const s2 = s * s; const s3 = s2 * s
+    const A = 2 * s3 - 3 * s2 + 1; const B = (s3 - 2 * s2 + s) * hseg
+    const C = -2 * s3 + 3 * s2; const D = (s3 - s2) * hseg
+    const E = 6 * s2 - 6 * s; const F = (3 * s2 - 4 * s + 1) * hseg
+    const Gc = -6 * s2 + 6 * s; const H = (3 * s2 - 2 * s) * hseg
+    const P = 12 * s - 6; const Q = (6 * s - 4) * hseg
+    const Rr = -12 * s + 6; const Ss = (6 * s - 2) * hseg
+    const hh = hseg * hseg
+    const { q0, qd0, q1, qd1 } = seg
+    for (let j = 0; j < n; j++) {
+      this.tauQ[base + j] = A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]
+      this.tauQd[base + j] = (E * q0[j] + F * qd0[j] + Gc * q1[j] + H * qd1[j]) / hseg
+      this.tauQdd[base + j] = (P * q0[j] + Q * qd0[j] + Rr * q1[j] + Ss * qd1[j]) / hh
+    }
+    return base
+  }
+
+  /** (h, hx, hy, uz, wtt) at (x, y, tau) inside the current segment.
+   *  M6-4A optimized path: per-tau modal coefficients are shared through
+   *  modalCoeffs(), spatial weights use flattened tables and reused
+   *  scratch. Arithmetic and summation order match surfAtReference. */
   surfAt(x: number, y: number, tau: number, out: Float64Array): void {
+    const seg = this.seg
+    if (!seg) { out.fill(0); return }
+    const base = this.modalCoeffs(tau)
+    const r = Math.hypot(x, y)
+    const idx = Math.min((r * (this.ng1 / this.a)) | 0, this.ng1)
+    const rs = r < 1e-12 ? 1e-12 : r
+    const c = x / rs; const sn = y / rs
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
+    for (let m = 2; m <= 4; m++) {
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
+    }
+    const stride = BD.ngrid
+    let hh = 0; let hx = 0; let hy = 0; let uz = 0; let wtt = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const mi = this.dofMode[j]; const m = this.dofM[j]
+      const R = this.Rflat[mi * stride + idx]; const dR = this.dRflat[mi * stride + idx]
+      let W: number; let Wx: number; let Wy: number
+      if (m === 0) {
+        W = R; Wx = dR * c; Wy = dR * sn
+      } else {
+        const cm = CM[m]; const sm = SM[m]
+        let Wr: number; let Wt: number
+        if (this.dofCos[j]) { W = R * cm; Wr = dR * cm; Wt = (-m * R * sm) / rs }
+        else { W = R * sm; Wr = dR * sm; Wt = (m * R * cm) / rs }
+        Wx = Wr * c - Wt * sn; Wy = Wr * sn + Wt * c
+      }
+      const q = this.tauQ[base + j]; const qd = this.tauQd[base + j]; const qdd = this.tauQdd[base + j]
+      hh += q * W; hx += q * Wx; hy += q * Wy; uz += qd * W; wtt += qdd * W
+    }
+    out[0] = hh; out[1] = hx; out[2] = hy; out[3] = uz; out[4] = wtt
+  }
+
+  /** Pre-M6-4A surfAt, kept verbatim as the comparison reference. */
+  surfAtReference(x: number, y: number, tau: number, out: Float64Array): void {
     const seg = this.seg
     if (!seg) { out.fill(0); return }
     const hseg = seg.t1 - seg.t0
