@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Pause, Play, RotateCcw } from 'lucide-react'
-import { drawParticles, drawFrameCache, FrameCache } from '../rendering/particleRenderer'
+import { drawParticles, drawFrameCache, FrameCache, GlParticleRenderer } from '../rendering/particleRenderer'
 import type { SandSnapshot } from '../simulation/types'
 import type { TransientStats } from '../simulation/transientSand'
 import { calibratedForceN } from '../simulation/transientSand'
@@ -30,6 +30,10 @@ function performanceScore(forceN: number): PerformanceScore {
 
 export default function ParticleStage({ seed0 }: { seed0: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const glCanvasRef = useRef<HTMLCanvasElement>(null)
+  const glRef = useRef<GlParticleRenderer | null>(null)
+  const [glFailed, setGlFailed] = useState(
+    () => new URLSearchParams(window.location.search).get('gl') === '0')
   const workerRef = useRef<Worker | null>(null)
   const audioRef = useRef<ScoreStreamAudio | null>(null)
   const frameCacheRef = useRef(new FrameCache())
@@ -76,11 +80,21 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
   }, [])
 
   useEffect(() => {
-    if (snap && canvasRef.current) {
-      if (kind === 'transient') drawFrameCache(canvasRef.current, frameCacheRef.current, PLATE_A)
-      else drawParticles(canvasRef.current, snap as unknown as SandSnapshot, PLATE_A)
+    if (!snap) return
+    if (kind === 'transient') {
+      if (!glFailed && glCanvasRef.current) {
+        if (!glRef.current || glRef.current.canvas !== glCanvasRef.current) {
+          glRef.current = new GlParticleRenderer(glCanvasRef.current)
+        }
+        if (glRef.current.available && glRef.current.draw(frameCacheRef.current, PLATE_A)) return
+        setGlFailed(true) // fall back to Canvas 2D (separate canvas element)
+        return
+      }
+      if (canvasRef.current) drawFrameCache(canvasRef.current, frameCacheRef.current, PLATE_A)
+    } else if (canvasRef.current) {
+      drawParticles(canvasRef.current, snap as unknown as SandSnapshot, PLATE_A)
     }
-  }, [snap, kind])
+  }, [snap, kind, glFailed])
 
   // Keep audio from running ahead of lagging physics (score time = physics t here).
   useEffect(() => {
@@ -144,7 +158,9 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
   return (
     <div className="flex flex-col h-full relative">
       <div className="flex-1 relative bg-[var(--void)] overflow-hidden flex items-center justify-center pt-16">
-        <canvas ref={canvasRef} width={360} height={360} className="w-full h-full object-contain" />
+        {kind === 'transient' && !glFailed
+          ? <canvas ref={glCanvasRef} width={360} height={360} className="w-full h-full object-contain" />
+          : <canvas ref={canvasRef} width={360} height={360} className="w-full h-full object-contain" />}
         <div className="absolute top-16 right-4 z-10 flex items-center gap-2 border border-[var(--ok)]/50 bg-[var(--ok)]/10 px-2 py-1 rounded text-[10px] font-mono text-[var(--ok)]">
           {mode === 'single' ? '砂・単一モード（c002）' : '砂・多モード演奏（M3）'}{playing ? ' 実計算中' : ' 一時停止'}
         </div>
