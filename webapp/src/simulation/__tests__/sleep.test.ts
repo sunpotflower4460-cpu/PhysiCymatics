@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest'
 import { singleToneScore, type PerformanceScore } from '../sequence'
 import { TransientSandSim, createTransientSim, createTransientSimShard, shardRanges, calibratedForceN } from '../transientSand'
 import { TransientPlate, hermiteQRange } from '../plateTransient'
-import { initialState } from '../sand'
+import { initialState, initialStateRange } from '../sand'
 
 function run(enabled: boolean, freq = 152, tEnd = 0.6, n = 60, forceScale = 1): TransientSandSim {
   const sim = createTransientSim(singleToneScore(freq, calibratedForceN() * forceScale, 30), n, 7, [0, 0], { enabled })
@@ -19,6 +19,27 @@ function maxPosDiff(a: TransientSandSim, b: TransientSandSim): number {
   }
   return m
 }
+
+describe('M6-4R range initialization', () => {
+  it('initialStateRange is bitwise identical to slicing initialState', () => {
+    for (const [count, seed] of [[100, 7], [5000, 42], [600000, 1]] as const) {
+      const full = initialState(0.12, count, seed)
+      const ranges: [number, number][] = [[0, 1], [0, count], [1, 2],
+        [Math.floor(count / 3), Math.floor(count / 3) + 17], [count - 1, count]]
+      for (const [a, b] of ranges) {
+        const st = initialStateRange(0.12, count, seed, a, b)
+        for (let i = 0; i < b - a; i++) {
+          expect(st.x[i]).toBe(full.x[a + i])
+          expect(st.y[i]).toBe(full.y[a + i])
+          expect(st.z[i]).toBe(full.z[a + i])
+          expect(st.id[i]).toBe(a + i)
+          expect(st.alive[i]).toBe(1)
+          expect(st.sitting[i]).toBe(0)
+        }
+      }
+    }
+  })
+})
 
 describe('M6-4B shard equivalence (in-process replicas)', () => {
   it('K shards stepped in lockstep reproduce the single sim bitwise', () => {
