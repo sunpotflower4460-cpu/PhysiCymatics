@@ -542,27 +542,70 @@ export class TransientSandSim {
     if (!useLocal) {
       for (let j = 0; j < pl.ndof; j++) hBoundW += Math.max(Math.abs(lc.qMin[j]), Math.abs(lc.qMax[j]))
     }
-    const safe = (d: number): boolean => {
+    const zMinAt = (d: number): number => {
       const zEnd = z0 + vz0 * d - 0.5 * G * d * d
       const tv = Math.min(Math.max(vz0 / G, 0), d)
-      const zMin = Math.min(z0, zEnd, z0 + vz0 * tv - 0.5 * G * tv * tv)
-      if (!useLocal) return zMin > hBoundW + SLEEP_HEIGHT_MARGIN
+      return Math.min(z0, zEnd, z0 + vz0 * tv - 0.5 * G * tv * tv)
+    }
+    // Max window bound over the traversed box up to duration d
+    // (+Infinity when the box leaves the proven domain).
+    const boxBound = (d: number): number => {
       const a = pl.a; const Gn = TransientSandSim.GRID
       const x1 = px + vx * d; const y1 = py + vy * d
       const minX = Math.min(px, x1); const maxX = Math.max(px, x1)
       const minY = Math.min(py, y1); const maxY = Math.max(py, y1)
-      if (minX < -a || maxX > a || minY < -a || maxY > a) return false
-      const lim = zMin - SLEEP_HEIGHT_MARGIN
+      if (minX < -a || maxX > a || minY < -a || maxY > a) return Infinity
       const gx0 = Math.min(Gn - 1, Math.max(0, Math.floor(((minX + a) / (2 * a)) * Gn)))
       const gx1 = Math.min(Gn - 1, Math.max(0, Math.floor(((maxX + a) / (2 * a)) * Gn)))
       const gy0 = Math.min(Gn - 1, Math.max(0, Math.floor(((minY + a) / (2 * a)) * Gn)))
       const gy1 = Math.min(Gn - 1, Math.max(0, Math.floor(((maxY + a) / (2 * a)) * Gn)))
+      let mx = -Infinity
       for (let gy = gy0; gy <= gy1; gy++) {
         for (let gx = gx0; gx <= gx1; gx++) {
-          if (!(this.cellHWin![gy * Gn + gx] < lim)) return false
+          const b = this.cellHWin![gy * Gn + gx]
+          if (b > mx) mx = b
         }
       }
-      return true
+      return mx
+    }
+    // Two-stage local safety (keeps the bisection O(1) per iteration):
+    // first solve the safe duration against the START cell's bound,
+    // then verify the whole traversed box at that duration; if the box
+    // bound is larger, re-solve against it (boxes nest with duration,
+    // so that bound is conservative for every shorter duration).
+    let localBoundFixed = Number.NaN
+    let localDomainCap = Infinity
+    const safe = (d: number): boolean => {
+      const zMin = zMinAt(d)
+      if (!useLocal) return zMin > hBoundW + SLEEP_HEIGHT_MARGIN
+      if (d > localDomainCap) return false
+      return zMin > localBoundFixed + SLEEP_HEIGHT_MARGIN
+    }
+    if (useLocal) {
+      const startCell = this.cellIndex(px, py)
+      localBoundFixed = this.cellHWin![startCell]
+      if (!(zMinAt(0) > localBoundFixed + SLEEP_HEIGHT_MARGIN)) return
+      let lo1 = 0; let hi1 = Math.min(SLEEP_WINDOW_S, lc.end - tNew)
+      if (!safe(hi1)) {
+        for (let k = 0; k < 40; k++) {
+          const mid = 0.5 * (lo1 + hi1)
+          if (safe(mid)) lo1 = mid; else hi1 = mid
+        }
+      } else lo1 = hi1
+      const bb = boxBound(lo1)
+      if (bb > localBoundFixed) localBoundFixed = bb
+      localDomainCap = lo1
+      if (!Number.isFinite(localBoundFixed)) {
+        // Box leaves the domain: shrink to the largest in-domain
+        // duration by bisection on the domain predicate.
+        let loD = 0; let hiD = lo1
+        for (let k = 0; k < 40; k++) {
+          const mid = 0.5 * (loD + hiD)
+          if (Number.isFinite(boxBound(mid))) loD = mid; else hiD = mid
+        }
+        localBoundFixed = boxBound(loD)
+        localDomainCap = loD
+      }
     }
     if (!safe(0)) return
     let lo = 0; let hi = Math.min(SLEEP_WINDOW_S, lc.end - tNew)
