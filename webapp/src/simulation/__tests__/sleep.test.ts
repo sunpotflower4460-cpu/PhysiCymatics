@@ -56,6 +56,163 @@ describe('M6-5 local non-contact bound', () => {
   })
 })
 
+describe('M6-5R boundary audit (local bound domain)', () => {
+  // The precomputed Phi ranges cover the closed square [-a,a]^2 only.
+  // phiAll outside that square evaluates R[last bin] * trig(theta) with
+  // the TRUE theta, which clamped edge cells do not contain. Audit
+  // evidence: at (0.24, 0.05) most DOFs violate the clamped cell range.
+  // locallyClear must therefore never prove a segment that leaves the
+  // square, and must fail closed on non-finite input.
+  type Priv = {
+    locallyClear: (x0: number, y0: number, x1: number, y1: number, zMin: number) => boolean
+    cellHeightMax: (c: number) => number
+    cellIndex: (x: number, y: number) => number
+    cellPhiLo: Float64Array; cellPhiHi: Float64Array
+  }
+  const calmSim = () => {
+    const sim = createTransientSim(singleToneScore(152, 0, 30), 10, 7, [0, 0], { enabled: true, localBound: true })
+    sim.step() // establishes a plate segment with q == 0 (no drive force)
+    return sim
+  }
+
+  it('clamped edge cells do NOT contain phiAll outside [-a,a]^2 (audit evidence)', () => {
+    const sim = calmSim()
+    const s = sim as unknown as Priv
+    const pl = sim.plate; const nd = pl.ndof
+    const phi = new Float64Array(nd)
+    pl.phiAll(0.24, 0.05, phi)
+    const c = s.cellIndex(0.24, 0.05) // clamped to the edge column
+    let violations = 0
+    for (let j = 0; j < nd; j++) {
+      if (phi[j] < s.cellPhiLo[c * nd + j] - 1e-12 || phi[j] > s.cellPhiHi[c * nd + j] + 1e-12) violations++
+    }
+    expect(violations).toBeGreaterThan(0)
+  })
+
+  it('locallyClear never proves a segment leaving [-a,a]^2', () => {
+    const sim = calmSim()
+    const s = sim as unknown as Priv
+    const a = sim.plate.a
+    // Fully inside (endpoints on the closed boundary included): provable.
+    expect(s.locallyClear(0.10, 0.05, 0.11, 0.05, 1e-6)).toBe(true)
+    expect(s.locallyClear(0.10, 0.05, a, 0.05, 1e-6)).toBe(true)
+    expect(s.locallyClear(-a, -a, a, a, 1e-6)).toBe(true)
+    // Leaving the square in any direction: never proven, even though the
+    // calm plate height is exactly 0 (the bound has no domain there).
+    expect(s.locallyClear(0.10, 0.05, 0.24, 0.05, 1e-6)).toBe(false)
+    expect(s.locallyClear(0.10, 0.05, a + 1e-12, 0.05, 1e-6)).toBe(false)
+    expect(s.locallyClear(0.05, 0.10, 0.05, 0.24, 1e-6)).toBe(false)
+    expect(s.locallyClear(-0.24, 0.05, -0.10, 0.05, 1e-6)).toBe(false)
+    expect(s.locallyClear(0.13, 0.13, 0.10, 0.05, 1e-6)).toBe(false)
+  })
+
+  it('locallyClear fails closed on non-finite input', () => {
+    const sim = calmSim()
+    const s = sim as unknown as Priv
+    expect(s.locallyClear(0.10, 0.05, 0.11, 0.05, NaN)).toBe(false)
+    expect(s.locallyClear(0.10, 0.05, 0.11, 0.05, Infinity)).toBe(false)
+    expect(s.locallyClear(NaN, 0.05, 0.11, 0.05, 1e-6)).toBe(false)
+    expect(s.locallyClear(0.10, 0.05, Infinity, 0.05, 1e-6)).toBe(false)
+  })
+
+  it('cell height bound contains surfAt at deterministic boundary points', () => {
+    const sim = createTransientSim(singleToneScore(649, calibratedForceN(), 30), 10, 7, [0, 0], { enabled: true, localBound: true })
+    sim.advanceTo(0.05)
+    sim.step()
+    const s = sim as unknown as Priv
+    const pl = sim.plate; const a = pl.a
+    const out = new Float64Array(5)
+    const ng = pl.modes[0].R.length
+    const pts: [number, number][] = [
+      [0, 0], [a, 0], [-a, 0], [0, a], [0, -a], [a, a], [-a, -a], [a, -a], [-a, a],
+      [a - 1e-15, 0.03], [-(a - 1e-15), -0.07], [1e-15, -1e-15],
+    ]
+    // radial bin edges at several angles
+    for (const k of [1, 2, 17, 100, ng - 2, ng - 1]) {
+      const r = (k * a) / (ng - 1)
+      for (const th of [0, 0.7, Math.PI / 2, 2.4, Math.PI, -1.3]) {
+        const x = r * Math.cos(th); const y = r * Math.sin(th)
+        if (Math.abs(x) <= a && Math.abs(y) <= a) pts.push([x, y])
+      }
+    }
+    const dt = sim.dtNow()
+    for (const [x, y] of pts) {
+      const bound = s.cellHeightMax(s.cellIndex(x, y))
+      for (const fr of [0, 0.31, 0.5, 0.83, 1]) {
+        pl.surfAt(x, y, sim.t - dt + fr * dt, out)
+        expect(out[0]).toBeLessThanOrEqual(bound + 1e-12)
+      }
+    }
+  })
+
+  it('hermiteQRange contains dense Bernstein samples and lies in the Bernstein hull', () => {
+    let seed = 424243
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff * 2 - 1 }
+    for (let trial = 0; trial < 300; trial++) {
+      const q0 = rnd() * 1e-3; const q1 = rnd() * 1e-3
+      const qd0 = rnd(); const qd1 = rnd()
+      const h = 1e-4 + Math.abs(rnd()) * 1e-3
+      const [lo, hi] = hermiteQRange(q0, qd0, q1, qd1, h)
+      // Bernstein coefficients of the same cubic on s in [0,1].
+      const b0 = q0; const b1 = q0 + (h * qd0) / 3; const b2 = q1 - (h * qd1) / 3; const b3 = q1
+      const bMin = Math.min(b0, b1, b2, b3); const bMax = Math.max(b0, b1, b2, b3)
+      const scale = Math.max(1e-12, Math.abs(bMin), Math.abs(bMax))
+      expect(lo).toBeGreaterThanOrEqual(bMin - 1e-12 * scale - 1e-18)
+      expect(hi).toBeLessThanOrEqual(bMax + 1e-12 * scale + 1e-18)
+      for (let k = 0; k <= 40; k++) {
+        const s = k / 40; const u = 1 - s
+        // de Casteljau via Bernstein basis (independent evaluation path)
+        const v = u * u * u * b0 + 3 * u * u * s * b1 + 3 * u * s * s * b2 + s * s * s * b3
+        expect(v).toBeGreaterThanOrEqual(lo - 1e-12 * scale - 1e-18)
+        expect(v).toBeLessThanOrEqual(hi + 1e-12 * scale + 1e-18)
+      }
+    }
+  })
+
+  it('outward-fast ensemble incl. edge exits: on/off bitwise identical', () => {
+    const mk = (localBound: boolean) => {
+      const sim = createTransientSim(singleToneScore(152, calibratedForceN(), 30), 200, 11, [0, 0], { enabled: true, localBound })
+      const st = sim.state
+      for (let i = 0; i < st.id.length; i++) {
+        const r = Math.hypot(st.x[i], st.y[i]) || 1e-9
+        const sp = 1.5 + (i % 7) * 0.6
+        st.vx[i] = (st.x[i] / r) * sp; st.vy[i] = (st.y[i] / r) * sp
+        st.vz[i] = 0.4 + (i % 5) * 0.15; st.sitting[i] = 0
+      }
+      return sim
+    }
+    const off = mk(false); const on = mk(true)
+    off.advanceTo(0.3); on.advanceTo(0.3)
+    expect(on.nBounce).toBe(off.nBounce)
+    expect(on.nDetach).toBe(off.nDetach)
+    expect([...on.state.alive]).toEqual([...off.state.alive])
+    expect([...on.state.sitting]).toEqual([...off.state.sitting])
+    expect(maxPosDiff(on, off)).toBe(0)
+    for (let i = 0; i < on.state.id.length; i++) {
+      expect(on.state.z[i]).toBe(off.state.z[i])
+      expect(on.state.vx[i]).toBe(off.state.vx[i])
+      expect(on.state.vz[i]).toBe(off.state.vz[i])
+    }
+    // The scenario really does throw particles off the plate.
+    expect(on.nAlive).toBeLessThan(200)
+  })
+
+  it('frequency switch with residual vibration: on/off bitwise identical', () => {
+    const mk = (localBound: boolean) => createTransientSim(
+      singleToneScore(152, calibratedForceN(), 30), 80, 5, [0, 0], { enabled: true, localBound })
+    const off = mk(false); const on = mk(true)
+    for (const s of [off, on]) {
+      s.advanceTo(0.25)
+      s.wakeAll(); s.plate.setFrequency(649, s.t)
+      s.advanceTo(0.5)
+    }
+    expect(on.nBounce).toBe(off.nBounce)
+    expect(on.nDetach).toBe(off.nDetach)
+    expect([...on.state.alive]).toEqual([...off.state.alive])
+    expect(maxPosDiff(on, off)).toBe(0)
+  })
+})
+
 describe('M6-4R range initialization', () => {
   it('initialStateRange is bitwise identical to slicing initialState', () => {
     for (const [count, seed] of [[100, 7], [5000, 42], [600000, 1]] as const) {
