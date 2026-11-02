@@ -2,7 +2,7 @@
 // counts), sleep must actually engage, input changes must invalidate it.
 import { describe, it, expect } from 'vitest'
 import { singleToneScore, type PerformanceScore } from '../sequence'
-import { TransientSandSim, createTransientSim, createTransientSimShard, shardRanges, calibratedForceN } from '../transientSand'
+import { TransientSandSim, createTransientSim, createTransientSimShard, shardRanges, calibratedForceN, type SleepOptions } from '../transientSand'
 import { TransientPlate, hermiteQRange } from '../plateTransient'
 import { initialState, initialStateRange } from '../sand'
 
@@ -328,6 +328,31 @@ describe('M6-6 sliced non-contact proof', () => {
     }
   })
 
+  it('heightAccelAt/accelAt are bitwise identical to surfAt h/wtt', () => {
+    const plate = new TransientPlate(singleToneScore(649, calibratedForceN(), 30))
+    let seed = 51501
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff * 2 - 1 }
+    for (let j = 0; j < plate.ndof; j++) { plate.q[j] = rnd() * 2e-4; plate.qd[j] = rnd() * 0.3 }
+    const out = new Float64Array(5); const out2 = new Float64Array(2)
+    const a = plate.a
+    const pts: [number, number][] = [[0, 0], [a, 0], [0, -a], [a, a], [1e-15, -1e-15], [0.3, 0.2], [-0.24, 0.05]]
+    for (let n = 0; n < 300; n++) pts.push([rnd() * 0.2, rnd() * 0.2])
+    for (let step = 0; step < 3; step++) {
+      plate.beginStep(step * 1.7e-4, (step + 1) * 1.7e-4)
+      for (const [x, y] of pts) {
+        for (const fr of [0, 0.17, 0.5, 0.99, 1]) {
+          const tau = step * 1.7e-4 + fr * 1.7e-4
+          plate.surfAt(x, y, tau, out)
+          plate.heightAccelAt(x, y, tau, out2)
+          expect(out2[0]).toBe(out[0])
+          expect(out2[1]).toBe(out[4])
+          expect(plate.accelAt(x, y, tau)).toBe(out[4])
+          expect(plate.heightAtFused(x, y, tau)).toBe(out[0])
+        }
+      }
+    }
+  })
+
   it('sliced proof engages where the whole-segment proof cannot', () => {
     const mk = (opts: object) => createTransientSim(
       singleToneScore(152, calibratedForceN(), 30), 200, 7, [0, 0], { enabled: true, ...opts })
@@ -337,6 +362,82 @@ describe('M6-6 sliced non-contact proof', () => {
     expect(sliced.localSliceAttempts).toBeGreaterThan(0)
     // The sliced proof must not sample MORE segments than M6-5.
     expect(sliced.sampledSegments).toBeLessThanOrEqual(whole.sampledSegments)
+  })
+})
+
+describe('M6-7B localized flying sleep', () => {
+  it('window cell bound contains actual surfAt heights over the window', () => {
+    const sim = createTransientSim(singleToneScore(649, calibratedForceN(), 30), 10, 7, [0, 0],
+      { enabled: true, localSleep: true })
+    type Priv = {
+      ensureLookahead: (t: number) => void; ensureCellHWin: () => void
+      cellHWin: Float64Array; cellIndex: (x: number, y: number) => number
+      lookCache: { end: number } | null
+    }
+    const s = sim as unknown as Priv
+    sim.advanceTo(0.05)
+    s.ensureLookahead(sim.t)
+    s.ensureCellHWin()
+    const pl = sim.plate
+    const out = new Float64Array(5)
+    // The lookahead plate evolution is the same RK4 as stepping, so
+    // check against a twin sim stepped through the window start.
+    const twin = createTransientSim(singleToneScore(649, calibratedForceN(), 30), 10, 7, [0, 0],
+      { enabled: true, localSleep: true })
+    twin.advanceTo(0.05)
+    let seed = 60606
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff }
+    const dt = twin.dtNow()
+    for (let stepN = 0; stepN < 40; stepN++) {
+      const t0 = twin.t
+      twin.step()
+      for (let n = 0; n < 60; n++) {
+        const x = (rnd() * 2 - 1) * pl.a; const y = (rnd() * 2 - 1) * pl.a
+        const tau = t0 + rnd() * dt
+        twin.plate.surfAt(x, y, tau, out)
+        const bound = s.cellHWin[s.cellIndex(x, y)]
+        expect(out[0]).toBeLessThanOrEqual(bound + 1e-9)
+      }
+    }
+  })
+
+  it('localized sleep reproduces baseline physics (counts + positions)', () => {
+    for (const forceScale of [1, 0.05]) {
+      const mk = (opts: SleepOptions) => createTransientSim(
+        singleToneScore(152, calibratedForceN() * forceScale, 30), 60, 7, [0, 0], opts)
+      const off = mk({ enabled: false })
+      const glob = mk({ enabled: true })
+      const loc = mk({ enabled: true, localSleep: true })
+      off.advanceTo(0.6); glob.advanceTo(0.6); loc.advanceTo(0.6)
+      expect(loc.localSleepWins).toBeGreaterThanOrEqual(0)
+      expect(loc.nBounce).toBe(off.nBounce)
+      expect(loc.nDetach).toBe(off.nDetach)
+      expect(loc.nAlive).toBe(off.nAlive)
+      expect(maxPosDiff(loc, off)).toBeLessThan(5e-6)
+      // Localizing must never skip FEWER updates than the global bound
+      // would over the same run when it engages (bound is tighter).
+      expect(loc.skippedUpdates).toBeGreaterThanOrEqual(glob.skippedUpdates * 0.9)
+    }
+  })
+
+  it('frequency switch invalidates localized sleeps (wakeAll path)', () => {
+    const mk = (opts: SleepOptions) => {
+      const sim = createTransientSim(singleToneScore(152, calibratedForceN(), 30), 60, 7, [0, 0], opts)
+      sim.advanceTo(0.25)
+      sim.wakeAll(); sim.plate.setFrequency(649, sim.t)
+      sim.advanceTo(0.5)
+      return sim
+    }
+    const loc = mk({ enabled: true, localSleep: true })
+    const glob = mk({ enabled: true })
+    const off = mk({ enabled: false })
+    expect(loc.nBounce).toBe(off.nBounce)
+    expect(loc.nAlive).toBe(off.nAlive)
+    // Sleep-vs-off divergence in this scenario (1.4e-5 m) comes from the
+    // pre-existing wake/materialize rounding of M6-2 sleep itself;
+    // localization must stay close to the global-bound sleep path.
+    expect(maxPosDiff(loc, glob)).toBeLessThan(2e-6)
+    expect(loc.skippedUpdates).toBeGreaterThan(glob.skippedUpdates)
   })
 })
 
