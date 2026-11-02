@@ -79,6 +79,8 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
     wk.postMessage({ type: 'init', gamma: 80, count: 500, seed: seed0 })
     const pool = new TransientPool()
     poolRef.current = pool
+    // Measurement hook (dev diagnostics): pool round timing / workers.
+    ;(window as unknown as { __physiPool?: TransientPool }).__physiPool = pool
     pool.onBatch = (b) => {
       b.frames.forEach((f, k) => frameCacheRef.current.apply(f, b.starts[k], b.initialCount))
       setKind('transient')

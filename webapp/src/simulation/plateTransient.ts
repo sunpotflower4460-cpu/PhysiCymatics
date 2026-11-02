@@ -46,6 +46,9 @@ export class TransientPlate {
   // M6-5: exact per-DOF Hermite q ranges over the current segment.
   private segQMin!: Float64Array
   private segQMax!: Float64Array
+  // M6-6: lazily computed per-slice q ranges for the current segment,
+  // cached against the segment object and slice count.
+  private sliceCache: { seg: object; k: number; min: Float64Array; max: Float64Array } | null = null
   signal: ScoreSignal
   epoch = 0 // score time = physics t - epoch (live score replacement)
 
@@ -295,6 +298,39 @@ export class TransientPlate {
   /** Exact per-DOF q range over the current segment (M6-5 local bound). */
   segQRanges(): { min: Float64Array; max: Float64Array } {
     return { min: this.segQMin, max: this.segQMax }
+  }
+
+  /** Per-DOF q ranges over each of k equal time slices of the current
+   *  segment (M6-6): min/max are k*ndof arrays, slice s at [s*ndof, ...].
+   *  The Hermite cubic restricted to a slice is the Hermite cubic through
+   *  its endpoint values/derivatives (evaluated with the same modalCoeffs
+   *  arithmetic surfAt uses), so hermiteQRange on those endpoints is the
+   *  exact range over the slice; widened by the same rounding hair as
+   *  segQRanges. Slice s covers [t0 + hseg*s/k, t0 + hseg*(s+1)/k]. */
+  segQSliceRanges(k: number): { min: Float64Array; max: Float64Array } {
+    const seg = this.seg!
+    const c = this.sliceCache
+    if (c && c.seg === seg && c.k === k) return { min: c.min, max: c.max }
+    const n = this.ndof
+    const min = new Float64Array(k * n); const max = new Float64Array(k * n)
+    const hseg = seg.t1 - seg.t0
+    // Copy endpoint modal states first (modalCoeffs slots are reused).
+    const qs = new Float64Array((k + 1) * n); const qds = new Float64Array((k + 1) * n)
+    for (let s = 0; s <= k; s++) {
+      const base = this.modalCoeffs(seg.t0 + (hseg * s) / k)
+      qs.set(this.tauQ.subarray(base, base + n), s * n)
+      qds.set(this.tauQd.subarray(base, base + n), s * n)
+    }
+    for (let s = 0; s < k; s++) {
+      const ta = seg.t0 + (hseg * s) / k; const tb = seg.t0 + (hseg * (s + 1)) / k
+      for (let j = 0; j < n; j++) {
+        const r = hermiteQRange(qs[s * n + j], qds[s * n + j], qs[(s + 1) * n + j], qds[(s + 1) * n + j], tb - ta)
+        const wden = 1e-12 * (1 + Math.abs(r[0]) + Math.abs(r[1]))
+        min[s * n + j] = r[0] - wden; max[s * n + j] = r[1] + wden
+      }
+    }
+    this.sliceCache = { seg, k, min, max }
+    return { min, max }
   }
 
   /** Per-tau Hermite modal coefficients (q, qd, qdd per DOF) for the

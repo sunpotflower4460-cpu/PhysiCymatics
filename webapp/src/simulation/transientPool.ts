@@ -74,6 +74,12 @@ export class TransientPool {
   private lastT = 0
   private lastWall = 0
   playing = false
+  // Round timing diagnostics (measurement only; no control use):
+  // broadcast -> last shard arrival (total), and the arrival spread
+  // across shards (an upper bound on sync waiting + message transit).
+  private roundStartMs = 0
+  private arrivalMs: number[] = []
+  timing = { rounds: 0, lastRoundMs: 0, lastSpreadMs: 0, maxRoundMs: 0, sumRoundMs: 0 }
 
   constructor(private factory: () => WorkerLike = () =>
     new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }) as unknown as WorkerLike) {}
@@ -176,6 +182,7 @@ export class TransientPool {
       const rev = this.controlRev + 1
       this.round = { kind: 'control', batchId: this.batchSeq, controlRevision: rev }
       this.collected.clear()
+      this.roundStartMs = performance.now()
       this.broadcast({ ...(ctrl as object), controlRevision: rev, generation: this.gen })
       return
     }
@@ -185,6 +192,7 @@ export class TransientPool {
     this.batchSeq++
     this.round = { kind: 'batch', batchId: this.batchSeq, controlRevision: this.controlRev }
     this.collected.clear()
+    this.roundStartMs = performance.now()
     this.broadcast({
       type: 'stepBatch', steps, generation: this.gen,
       batchId: this.batchSeq, controlRevision: this.controlRev, speed: this.speedEma,
@@ -208,8 +216,19 @@ export class TransientPool {
     if (msg.dtNow && msg.dtNow > 0) this.dtHint = msg.dtNow
     const k = msg.shardIndex ?? 0
     if (k < 0 || k >= this.workers.length || this.collected.has(k)) { this.droppedStale++; return }
+    if (this.roundStartMs > 0) this.arrivalMs[k] = performance.now() - this.roundStartMs
     this.collected.set(k, msg.frame)
     if (this.collected.size < this.workers.length) return
+    if (this.roundStartMs > 0) {
+      const arr = this.arrivalMs.slice(0, this.workers.length)
+      const mx = Math.max(...arr); const mn = Math.min(...arr)
+      this.timing.rounds++
+      this.timing.lastRoundMs = mx
+      this.timing.lastSpreadMs = mx - mn
+      this.timing.sumRoundMs += mx
+      if (mx > this.timing.maxRoundMs) this.timing.maxRoundMs = mx
+      this.roundStartMs = 0
+    }
     const frames = this.workers.map((_, i) => this.collected.get(i)!)
     this.collected.clear()
     const round = this.round!
