@@ -6,7 +6,7 @@
 // Detection floor: a dip entirely between adjacent samples can be missed.
 import { G } from './surface'
 import { TransientPlate } from './plateTransient'
-import { initialState } from './sand'
+import { initialState, initialStateRange } from './sand'
 import { DEFAULT_PARAMS, type ParticleState, type SandParams } from './types'
 import type { PerformanceScore } from './sequence'
 
@@ -729,13 +729,10 @@ export function createTransientSimShard(
   sleep: SleepOptions, shardIndex: number, shardCount: number,
 ): TransientSandSim {
   const plate = new TransientPlate(score, driveXY)
-  const full = initialState(plate.a, count, seed)
   const [a, b] = shardRanges(count, shardCount)[shardIndex]
-  const st: ParticleState = {
-    x: full.x.slice(a, b), y: full.y.slice(a, b), z: full.z.slice(a, b),
-    vx: full.vx.slice(a, b), vy: full.vy.slice(a, b), vz: full.vz.slice(a, b),
-    alive: full.alive.slice(a, b), sitting: full.sitting.slice(a, b), id: full.id.slice(a, b),
-  }
+  // M6-4R: generate only this shard's range (bitwise identical to slicing
+  // the full ensemble; see initialStateRange).
+  const st = initialStateRange(plate.a, count, seed, a, b)
   return new TransientSandSim(plate, st, DEFAULT_PARAMS, sleep)
 }
 

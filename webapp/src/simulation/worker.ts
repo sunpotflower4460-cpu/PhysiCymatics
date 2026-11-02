@@ -9,10 +9,10 @@ import type { PerformanceScore } from './sequence'
 export type SandWorkerIn =
   | { type: 'init'; gamma: number; count: number; seed: number }
   | { type: 'initPerformance'; score: PerformanceScore; count: number; seed: number; driveXY: [number, number]; shardIndex?: number; shardCount?: number; generation?: number }
-  | { type: 'stepBatch'; steps: number; generation: number; speed: number }
-  | { type: 'setScore'; score: PerformanceScore }
-  | { type: 'setFrequency'; hz: number }
-  | { type: 'setDrive'; driveXY: [number, number] }
+  | { type: 'stepBatch'; steps: number; generation: number; batchId: number; controlRevision: number; speed: number }
+  | { type: 'setScore'; score: PerformanceScore; controlRevision?: number; generation?: number }
+  | { type: 'setFrequency'; hz: number; controlRevision?: number; generation?: number }
+  | { type: 'setDrive'; driveXY: [number, number]; controlRevision?: number; generation?: number }
   | { type: 'play' }
   | { type: 'pause' }
 
@@ -26,13 +26,18 @@ let debtSteps = 0
 // step batches; the internal timer stays off.
 let generation = -1
 let shardIndex = 0
+let batchId = 0
+let controlRevision = 0
 
-function postSnapshot(): void {
+function postSnapshot(frameKind: 'init' | 'batch' | 'control' = 'batch'): void {
   if (tsim) {
     // M6-3C: differential frame (unchanged display xy is not resent).
     const frame = tsim.frameDelta(speedEma)
     ;(self as unknown as Worker).postMessage(
-      { type: 'frame', kind: 'transient', frame, generation, shardIndex, dtNow: tsim.dtNow() },
+      {
+        type: 'frame', kind: 'transient', frame, generation, shardIndex,
+        batchId, controlRevision, frameKind, dtNow: tsim.dtNow(),
+      },
       [frame.xy.buffer, frame.idx.buffer, frame.dead.buffer] as unknown as Transferable[])
     return
   }
@@ -80,23 +85,34 @@ self.onmessage = (ev: MessageEvent<SandWorkerIn>) => {
       sim = null
       generation = msg.generation ?? -1
       shardIndex = msg.shardIndex ?? 0
+      batchId = 0; controlRevision = 0
       tsim = msg.shardCount && msg.shardCount > 1
         ? createTransientSimShard(msg.score, msg.count, msg.seed, msg.driveXY, { enabled: true }, shardIndex, msg.shardCount)
         : createTransientSim(msg.score, msg.count, msg.seed, msg.driveXY)
       speedEma = 0
-      postSnapshot()
+      postSnapshot('init')
     } else if (msg.type === 'stepBatch') {
-      if (tsim && msg.generation === generation) {
+      if (tsim && msg.generation === generation && msg.controlRevision === controlRevision) {
         speedEma = msg.speed
+        batchId = msg.batchId
         for (let s = 0; s < msg.steps; s++) tsim.step()
-        postSnapshot()
+        postSnapshot('batch')
       }
     } else if (msg.type === 'setScore') {
-      if (tsim) { tsim.wakeAll(); tsim.plate.setScore(msg.score, tsim.t); tsim.refreshForceBounds(); postSnapshot() }
+      if (tsim && (msg.generation === undefined || msg.generation === generation)) {
+        controlRevision = msg.controlRevision ?? controlRevision
+        tsim.wakeAll(); tsim.plate.setScore(msg.score, tsim.t); tsim.refreshForceBounds(); postSnapshot('control')
+      }
     } else if (msg.type === 'setFrequency') {
-      if (tsim) { tsim.wakeAll(); tsim.plate.setFrequency(msg.hz, tsim.t); tsim.refreshForceBounds(); postSnapshot() }
+      if (tsim && (msg.generation === undefined || msg.generation === generation)) {
+        controlRevision = msg.controlRevision ?? controlRevision
+        tsim.wakeAll(); tsim.plate.setFrequency(msg.hz, tsim.t); tsim.refreshForceBounds(); postSnapshot('control')
+      }
     } else if (msg.type === 'setDrive') {
-      if (tsim) { tsim.wakeAll(); tsim.plate.setDrive(msg.driveXY[0], msg.driveXY[1]); tsim.refreshForceBounds(); postSnapshot() }
+      if (tsim && (msg.generation === undefined || msg.generation === generation)) {
+        controlRevision = msg.controlRevision ?? controlRevision
+        tsim.wakeAll(); tsim.plate.setDrive(msg.driveXY[0], msg.driveXY[1]); tsim.refreshForceBounds(); postSnapshot('control')
+      }
     } else if (msg.type === 'play') {
       if (generation >= 0) { /* pool-driven: coordinator sends stepBatch */ }
       else if ((sim || tsim) && !timer) { lastTickMs = 0; debtSteps = 0; timer = setInterval(tick, 33) }

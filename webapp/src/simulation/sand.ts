@@ -47,6 +47,33 @@ export function initialState(
   }
 }
 
+/** Particles [start, end) of the SAME (count, seed) ensemble as
+ *  initialState, generated without materializing earlier particles.
+ *  mulberry32 advances its state by a fixed increment per call and each
+ *  particle consumes exactly 2 calls, so starting the state at
+ *  seed + 2*start*INC (mod 2^32; exact in float64 for start < ~2e9)
+ *  reproduces the full sequence bitwise. Global IDs are preserved. */
+export function initialStateRange(
+  a: number, _count: number, seed: number, start: number, end: number,
+): ParticleState {
+  const n = end - start
+  const x = new Float64Array(n); const y = new Float64Array(n)
+  const skippedSeed = (seed + 2 * start * 0x6d2b79f5) >>> 0
+  const rng = mulberry32(skippedSeed)
+  for (let i = 0; i < n; i++) {
+    const rr = a * Math.sqrt(rng())
+    const th = 2 * Math.PI * rng()
+    x[i] = rr * Math.cos(th); y[i] = rr * Math.sin(th)
+  }
+  const z = new Float64Array(n).fill(5e-4)
+  const id = new Uint32Array(n)
+  for (let i = 0; i < n; i++) id[i] = start + i
+  return {
+    x, y, z, vx: new Float64Array(n), vy: new Float64Array(n), vz: new Float64Array(n),
+    alive: new Uint8Array(n).fill(1), sitting: new Uint8Array(n), id,
+  }
+}
+
 const S5 = new Float64Array(5)
 
 export class SandSim {
