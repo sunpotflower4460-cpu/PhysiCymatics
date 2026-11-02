@@ -14,10 +14,8 @@ type Mode = { name: string; opts: SleepOptions }
 const MODES: Mode[] = [
   { name: 'off', opts: { enabled: true, localBound: false } },
   { name: 'k1', opts: { enabled: true, localBound: true } },
-  { name: 'k2a', opts: { enabled: true, localBound: true, localSplits: 2 } },
   { name: 'k4a', opts: { enabled: true, localBound: true, localSplits: 4 } },
   { name: 'k8a', opts: { enabled: true, localBound: true, localSplits: 8 } },
-  { name: 'k4f', opts: { enabled: true, localBound: true, localSplits: 4, localAdaptive: false } },
 ]
 
 benchIt('M6-6 sliced proof bench', () => {
@@ -39,6 +37,9 @@ benchIt('M6-6 sliced proof bench', () => {
   run({ enabled: true }, 300, F, 0.2) // warmup
   const cases: [string, number, number, number, number, number][] = [
     // label, n, force, dur, pre, repeats
+    ['500-strong', 500, F, 0.5, 0, 3],
+    ['500-weak', 500, F * 0.05, 0.5, 0, 3],
+    ['5000-strong', 5000, F, 0.5, 0, 3],
     ['5000-weak', 5000, F * 0.05, 0.5, 0, 3],
     ['5000-weak-formed', 5000, F * 0.05, 0.5, 2, 3],
     ['20000-strong', 20000, F, 0.2, 0, 3],
