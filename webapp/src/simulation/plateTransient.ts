@@ -43,6 +43,9 @@ export class TransientPlate {
   private tauQ!: Float64Array
   private tauQd!: Float64Array
   private tauQdd!: Float64Array
+  // M6-5: exact per-DOF Hermite q ranges over the current segment.
+  private segQMin!: Float64Array
+  private segQMax!: Float64Array
   signal: ScoreSignal
   epoch = 0 // score time = physics t - epoch (live score replacement)
 
@@ -80,6 +83,8 @@ export class TransientPlate {
     this.tauQ = new Float64Array(TransientPlate.TAU_SLOTS * n)
     this.tauQd = new Float64Array(TransientPlate.TAU_SLOTS * n)
     this.tauQdd = new Float64Array(TransientPlate.TAU_SLOTS * n)
+    this.segQMin = new Float64Array(n)
+    this.segQMax = new Float64Array(n)
     this.setDrive(driveXY[0], driveXY[1])
   }
 
@@ -276,6 +281,15 @@ export class TransientPlate {
     }
     this.hBound = hb
     this.tauSlotTau.fill(NaN)
+    for (let j = 0; j < n; j++) {
+      const r = hermiteQRange(q0[j], qd0[j], q[j], qd[j], t1 - t0)
+      this.segQMin[j] = r[0]; this.segQMax[j] = r[1]
+    }
+  }
+
+  /** Exact per-DOF q range over the current segment (M6-5 local bound). */
+  segQRanges(): { min: Float64Array; max: Float64Array } {
+    return { min: this.segQMin, max: this.segQMax }
   }
 
   /** Per-tau Hermite modal coefficients (q, qd, qdd per DOF) for the

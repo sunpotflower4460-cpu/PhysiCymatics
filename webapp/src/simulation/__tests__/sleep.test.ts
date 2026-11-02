@@ -20,6 +20,42 @@ function maxPosDiff(a: TransientSandSim, b: TransientSandSim): number {
   return m
 }
 
+describe('M6-5 local non-contact bound', () => {
+  it('cell height bound dominates actual surfAt height everywhere sampled', () => {
+    const sim = createTransientSim(singleToneScore(152, calibratedForceN(), 30), 10, 7, [0, 0], { enabled: true, localBound: true })
+    sim.step()
+    const s = sim as unknown as { cellHeightMax: (c: number) => number; cellIndex: (x: number, y: number) => number }
+    const out = new Float64Array(5)
+    let seed = 77
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff }
+    const dt = sim.dtNow()
+    for (let k = 0; k < 4000; k++) {
+      const x = (rnd() * 2 - 1) * sim.plate.a
+      const y = (rnd() * 2 - 1) * sim.plate.a
+      const tau = sim.t - rnd() * dt
+      sim.plate.surfAt(x, y, tau, out)
+      const bound = s.cellHeightMax(s.cellIndex(x, y))
+      expect(out[0]).toBeLessThanOrEqual(bound + 1e-12)
+    }
+  })
+
+  it('localBound on/off are bitwise identical (strong and weak)', () => {
+    for (const forceScale of [1, 0.05]) {
+      const mk = (localBound: boolean) => createTransientSim(
+        singleToneScore(152, calibratedForceN() * forceScale, 30), 60, 7, [0, 0],
+        { enabled: true, localBound })
+      const off = mk(false); const on = mk(true)
+      off.advanceTo(0.6); on.advanceTo(0.6)
+      expect(on.nBounce).toBe(off.nBounce)
+      expect(on.nDetach).toBe(off.nDetach)
+      expect(on.nEventCap).toBe(off.nEventCap)
+      expect(maxPosDiff(on, off)).toBe(0)
+      expect([...on.state.sitting]).toEqual([...off.state.sitting])
+      expect(on.localSkips).toBeGreaterThanOrEqual(0)
+    }
+  })
+})
+
 describe('M6-4R range initialization', () => {
   it('initialStateRange is bitwise identical to slicing initialState', () => {
     for (const [count, seed] of [[100, 7], [5000, 42], [600000, 1]] as const) {
