@@ -2,7 +2,7 @@
 // counts), sleep must actually engage, input changes must invalidate it.
 import { describe, it, expect } from 'vitest'
 import { singleToneScore, type PerformanceScore } from '../sequence'
-import { TransientSandSim, createTransientSim, createTransientSimShard, shardRanges, calibratedForceN } from '../transientSand'
+import { TransientSandSim, createTransientSim, createTransientSimShard, shardRanges, calibratedForceN, type SleepOptions } from '../transientSand'
 import { TransientPlate, hermiteQRange } from '../plateTransient'
 import { initialState, initialStateRange } from '../sand'
 
@@ -403,7 +403,7 @@ describe('M6-7B localized flying sleep', () => {
 
   it('localized sleep reproduces baseline physics (counts + positions)', () => {
     for (const forceScale of [1, 0.05]) {
-      const mk = (opts: object) => createTransientSim(
+      const mk = (opts: SleepOptions) => createTransientSim(
         singleToneScore(152, calibratedForceN() * forceScale, 30), 60, 7, [0, 0], opts)
       const off = mk({ enabled: false })
       const glob = mk({ enabled: true })
@@ -421,7 +421,7 @@ describe('M6-7B localized flying sleep', () => {
   })
 
   it('frequency switch invalidates localized sleeps (wakeAll path)', () => {
-    const mk = (opts: object) => {
+    const mk = (opts: SleepOptions) => {
       const sim = createTransientSim(singleToneScore(152, calibratedForceN(), 30), 60, 7, [0, 0], opts)
       sim.advanceTo(0.25)
       sim.wakeAll(); sim.plate.setFrequency(649, sim.t)
