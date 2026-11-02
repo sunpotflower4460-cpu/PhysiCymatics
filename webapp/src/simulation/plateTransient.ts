@@ -43,6 +43,10 @@ export class TransientPlate {
   private tauQ!: Float64Array
   private tauQd!: Float64Array
   private tauQdd!: Float64Array
+  // M6-6: q-only coefficient cache for heightAt (same A..D arithmetic
+  // as modalCoeffs, so cached q values are bitwise identical).
+  private tauSlotTauQ = new Float64Array(TransientPlate.TAU_SLOTS).fill(NaN)
+  private tauQQ!: Float64Array
   // M6-5: exact per-DOF Hermite q ranges over the current segment.
   private segQMin!: Float64Array
   private segQMax!: Float64Array
@@ -86,6 +90,7 @@ export class TransientPlate {
     this.tauQ = new Float64Array(TransientPlate.TAU_SLOTS * n)
     this.tauQd = new Float64Array(TransientPlate.TAU_SLOTS * n)
     this.tauQdd = new Float64Array(TransientPlate.TAU_SLOTS * n)
+    this.tauQQ = new Float64Array(TransientPlate.TAU_SLOTS * n)
     this.segQMin = new Float64Array(n)
     this.segQMax = new Float64Array(n)
     this.setDrive(driveXY[0], driveXY[1])
@@ -284,6 +289,7 @@ export class TransientPlate {
     }
     this.hBound = hb
     this.tauSlotTau.fill(NaN)
+    this.tauSlotTauQ.fill(NaN)
     for (let j = 0; j < n; j++) {
       const r = hermiteQRange(q0[j], qd0[j], q[j], qd[j], t1 - t0)
       // Widen by a rounding hair for bound use (M6-5R): modalCoeffs
@@ -401,6 +407,60 @@ export class TransientPlate {
       hh += q * W; hx += q * Wx; hy += q * Wy; uz += qd * W; wtt += qdd * W
     }
     out[0] = hh; out[1] = hx; out[2] = hy; out[3] = uz; out[4] = wtt
+  }
+
+  /** q-only modal coefficients (M6-6): identical A..D expressions to
+   *  modalCoeffs, so the returned q values are bitwise the same; only
+   *  the qd/qdd work is skipped. Separate slot cache. */
+  private modalCoeffsQ(tau: number): number {
+    const seg = this.seg!
+    const slots = TransientPlate.TAU_SLOTS
+    const hbits = (tau * 2654435761) | 0
+    const slot = (hbits ^ (hbits >>> 3)) & (slots - 1)
+    const n = this.ndof
+    const base = slot * n
+    if (this.tauSlotTauQ[slot] === tau) return base
+    this.tauSlotTauQ[slot] = tau
+    const hseg = seg.t1 - seg.t0
+    const s = (tau - seg.t0) / hseg
+    const s2 = s * s; const s3 = s2 * s
+    const A = 2 * s3 - 3 * s2 + 1; const B = (s3 - 2 * s2 + s) * hseg
+    const C = -2 * s3 + 3 * s2; const D = (s3 - s2) * hseg
+    const { q0, qd0, q1, qd1 } = seg
+    for (let j = 0; j < n; j++) {
+      this.tauQQ[base + j] = A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]
+    }
+    return base
+  }
+
+  /** Plate height h(x, y, tau) only (M6-6): replicates surfAt's hh
+   *  accumulation term for term (same radial bin, same trig recurrence,
+   *  same summation order), so the result is bitwise identical to
+   *  surfAt's out[0]. Gradients / velocity / acceleration are skipped.
+   *  Used where only the height is compared (contact sampling and
+   *  bisection); the contact resolution itself still uses surfAt. */
+  heightAt(x: number, y: number, tau: number): number {
+    const seg = this.seg
+    if (!seg) return 0
+    const base = this.modalCoeffsQ(tau)
+    const r = Math.hypot(x, y)
+    const idx = Math.min((r * (this.ng1 / this.a)) | 0, this.ng1)
+    const rs = r < 1e-12 ? 1e-12 : r
+    const c = x / rs; const sn = y / rs
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
+    for (let m = 2; m <= 4; m++) {
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
+    }
+    const stride = BD.ngrid
+    let hh = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const m = this.dofM[j]
+      const R = this.Rflat[this.dofMode[j] * stride + idx]
+      const W = m === 0 ? R : this.dofCos[j] ? R * CM[m] : R * SM[m]
+      hh += this.tauQQ[base + j] * W
+    }
+    return hh
   }
 
   /** Pre-M6-4A surfAt, kept verbatim as the comparison reference. */

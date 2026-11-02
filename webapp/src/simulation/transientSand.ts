@@ -658,8 +658,8 @@ export class TransientSandSim {
         let firstBad = -1
         for (let k = 1; k <= CONTACT_SAMPLES; k++) {
           const tau = cur + rem * (k / CONTACT_SAMPLES); const d = tau - cur
-          pl.surfAt(x0 + vx0 * d, y0 + vy0 * d, tau, S5)
-          if (z0 + vz0 * d - 0.5 * G * d * d - S5[0] <= 0) { firstBad = k; break }
+          // Height-only evaluation (bitwise identical to surfAt's h).
+          if (z0 + vz0 * d - 0.5 * G * d * d - pl.heightAt(x0 + vx0 * d, y0 + vy0 * d, tau) <= 0) { firstBad = k; break }
         }
         if (firstBad < 0) {
           const d = rem
@@ -671,8 +671,7 @@ export class TransientSandSim {
         let hi = cur + rem * (firstBad / CONTACT_SAMPLES)
         for (let k = 0; k < EVENT_BISECT_ITERS; k++) {
           const tm = 0.5 * (lo + hi); const d = tm - cur
-          pl.surfAt(x0 + vx0 * d, y0 + vy0 * d, tm, S5)
-          if (z0 + vz0 * d - 0.5 * G * d * d <= S5[0]) hi = tm; else lo = tm
+          if (z0 + vz0 * d - 0.5 * G * d * d <= pl.heightAt(x0 + vx0 * d, y0 + vy0 * d, tm)) hi = tm; else lo = tm
         }
         const tc = 0.5 * (lo + hi); const d = tc - cur
         const xc = x0 + vx0 * d; const yc = y0 + vy0 * d
@@ -723,8 +722,7 @@ export class TransientSandSim {
             const d = subEnd - cur
             const xf = st.x[i] + st.vx[i] * d; const yf = st.y[i] + st.vy[i] * d
             const zf = st.z[i] + st.vz[i] * d - 0.5 * G * d * d
-            pl.surfAt(xf, yf, subEnd, S5)
-            if (zf >= S5[0]) {
+            if (zf >= pl.heightAt(xf, yf, subEnd)) {
               st.x[i] = xf; st.y[i] = yf; st.z[i] = zf; st.vz[i] -= G * d; cur = subEnd; break
             }
             const x0 = st.x[i]; const y0 = st.y[i]; const z0 = st.z[i]
@@ -732,8 +730,7 @@ export class TransientSandSim {
             let lo2 = cur; let hi2 = subEnd
             for (let k = 0; k < EVENT_BISECT_ITERS; k++) {
               const tm = 0.5 * (lo2 + hi2); const dd = tm - cur
-              pl.surfAt(x0 + vx0 * dd, y0 + vy0 * dd, tm, S5)
-              if (z0 + vz0 * dd - 0.5 * G * dd * dd <= S5[0]) hi2 = tm; else lo2 = tm
+              if (z0 + vz0 * dd - 0.5 * G * dd * dd <= pl.heightAt(x0 + vx0 * dd, y0 + vy0 * dd, tm)) hi2 = tm; else lo2 = tm
             }
             const tc = 0.5 * (lo2 + hi2); const dd = tc - cur
             const xc = x0 + vx0 * dd; const yc = y0 + vy0 * dd; const vzc = vz0 - G * dd
