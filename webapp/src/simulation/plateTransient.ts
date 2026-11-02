@@ -531,6 +531,34 @@ export class TransientPlate {
     out2[0] = hh; out2[1] = wtt
   }
 
+  /** Height with fused coefficient evaluation (M6-7A): same Hermite
+   *  expressions as modalCoeffsQ but computed inline per DOF without
+   *  the tau slot cache. Bitwise identical to heightAt; intended for
+   *  callers whose taus are unique (contact bisection), where the
+   *  cache cannot hit. Sample evaluations keep using heightAt so
+   *  shared sample taus still hit the cache. */
+  heightAtFused(x: number, y: number, tau: number): number {
+    this.heightCalls++
+    const seg = this.seg
+    if (!seg) return 0
+    const idx = this.spatialSetup(x, y)
+    const hseg = seg.t1 - seg.t0
+    const s = (tau - seg.t0) / hseg
+    const s2 = s * s; const s3 = s2 * s
+    const A = 2 * s3 - 3 * s2 + 1; const B = (s3 - 2 * s2 + s) * hseg
+    const C = -2 * s3 + 3 * s2; const D = (s3 - s2) * hseg
+    const { q0, qd0, q1, qd1 } = seg
+    const stride = BD.ngrid
+    let hh = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const m = this.dofM[j]
+      const R = this.Rflat[this.dofMode[j] * stride + idx]
+      const W = m === 0 ? R : this.dofCos[j] ? R * CM[m] : R * SM[m]
+      hh += (A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]) * W
+    }
+    return hh
+  }
+
   /** wtt at (x, y, tau) only (M6-7C): bitwise identical to surfAt's out[4]. */
   accelAt(x: number, y: number, tau: number): number {
     this.heightAccelCalls++

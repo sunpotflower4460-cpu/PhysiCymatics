@@ -36,7 +36,18 @@ benchIt('M6-7 profile + A/B', () => {
     t0 = performance.now()
     for (let i = 0; i < N; i++) acc += plate.heightAt(pts[i * 3], pts[i * 3 + 1], pts[i * 3 + 2])
     const hNs = ((performance.now() - t0) * 1e6) / N
-    log(`unit: surfAt=${surfNs.toFixed(0)}ns heightAt=${hNs.toFixed(0)}ns acc=${acc.toFixed(3)}`)
+    t0 = performance.now()
+    for (let i = 0; i < N; i++) acc += plate.heightAtFused(pts[i * 3], pts[i * 3 + 1], pts[i * 3 + 2])
+    const fNs = ((performance.now() - t0) * 1e6) / N
+    const out2 = new Float64Array(2)
+    t0 = performance.now()
+    for (let i = 0; i < N; i++) { plate.heightAccelAt(pts[i * 3], pts[i * 3 + 1], pts[i * 3 + 2], out2); acc += out2[0] + out2[1] }
+    const haNs = ((performance.now() - t0) * 1e6) / N
+    // Same-tau repeats (cache-hit path, like contact sample taus).
+    t0 = performance.now()
+    for (let i = 0; i < N; i++) acc += plate.heightAt(pts[i * 3], pts[i * 3 + 1], 8.5e-5)
+    const hHitNs = ((performance.now() - t0) * 1e6) / N
+    log(`unit: surfAt=${surfNs.toFixed(0)}ns heightAt=${hNs.toFixed(0)}ns heightAtFused=${fNs.toFixed(0)}ns heightAccelAt=${haNs.toFixed(0)}ns heightAtCacheHit=${hHitNs.toFixed(0)}ns acc=${acc.toFixed(3)}`)
   }
 
   type Mode = { name: string; opts: SleepOptions }

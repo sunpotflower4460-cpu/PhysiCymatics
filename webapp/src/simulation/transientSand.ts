@@ -678,7 +678,7 @@ export class TransientSandSim {
         for (let k = 0; k < EVENT_BISECT_ITERS; k++) {
           this.bisectIters++
           const tm = 0.5 * (lo + hi); const d = tm - cur
-          if (z0 + vz0 * d - 0.5 * G * d * d <= pl.heightAt(x0 + vx0 * d, y0 + vy0 * d, tm)) hi = tm; else lo = tm
+          if (z0 + vz0 * d - 0.5 * G * d * d <= pl.heightAtFused(x0 + vx0 * d, y0 + vy0 * d, tm)) hi = tm; else lo = tm
         }
         const tc = 0.5 * (lo + hi); const d = tc - cur
         const xc = x0 + vx0 * d; const yc = y0 + vy0 * d
@@ -738,7 +738,7 @@ export class TransientSandSim {
             for (let k = 0; k < EVENT_BISECT_ITERS; k++) {
               this.bisectIters++
               const tm = 0.5 * (lo2 + hi2); const dd = tm - cur
-              if (z0 + vz0 * dd - 0.5 * G * dd * dd <= pl.heightAt(x0 + vx0 * dd, y0 + vy0 * dd, tm)) hi2 = tm; else lo2 = tm
+              if (z0 + vz0 * dd - 0.5 * G * dd * dd <= pl.heightAtFused(x0 + vx0 * dd, y0 + vy0 * dd, tm)) hi2 = tm; else lo2 = tm
             }
             const tc = 0.5 * (lo2 + hi2); const dd = tc - cur
             const xc = x0 + vx0 * dd; const yc = y0 + vy0 * dd; const vzc = vz0 - G * dd

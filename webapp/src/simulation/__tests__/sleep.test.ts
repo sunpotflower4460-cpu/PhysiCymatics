@@ -347,6 +347,7 @@ describe('M6-6 sliced non-contact proof', () => {
           expect(out2[0]).toBe(out[0])
           expect(out2[1]).toBe(out[4])
           expect(plate.accelAt(x, y, tau)).toBe(out[4])
+          expect(plate.heightAtFused(x, y, tau)).toBe(out[0])
         }
       }
     }
