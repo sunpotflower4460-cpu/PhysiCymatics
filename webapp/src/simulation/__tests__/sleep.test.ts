@@ -213,6 +213,133 @@ describe('M6-5R boundary audit (local bound domain)', () => {
   })
 })
 
+describe('M6-6 sliced non-contact proof', () => {
+  type Priv = {
+    locallyClearSliced: (x0: number, y0: number, z0: number, vx0: number, vy0: number, vz0: number,
+      cur: number, tSeg: number, tNew: number, k: number) => boolean
+    cellHeightMaxSlice: (c: number, s: number, k: number) => number
+    cellIndex: (x: number, y: number) => number
+  }
+
+  it('slice height bound contains surfAt inside its slice', () => {
+    const K = 4
+    const sim = createTransientSim(singleToneScore(649, calibratedForceN(), 30), 10, 7, [0, 0],
+      { enabled: true, localBound: true, localSplits: K })
+    sim.advanceTo(0.05)
+    const t0 = sim.t
+    sim.step()
+    const s = sim as unknown as Priv
+    const pl = sim.plate
+    const out = new Float64Array(5)
+    const dt = sim.t - t0
+    let seed = 31337
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff }
+    for (let n = 0; n < 4000; n++) {
+      const x = (rnd() * 2 - 1) * pl.a; const y = (rnd() * 2 - 1) * pl.a
+      const fr = rnd()
+      const tau = t0 + fr * dt
+      const slice = Math.min(K - 1, Math.floor(fr * K))
+      pl.surfAt(x, y, tau, out)
+      const bound = s.cellHeightMaxSlice(s.cellIndex(x, y), slice, K)
+      expect(out[0]).toBeLessThanOrEqual(bound + 1e-12)
+    }
+  })
+
+  it('slice q ranges are contained in the whole-segment q ranges', () => {
+    const plate = new TransientPlate(singleToneScore(152, calibratedForceN(), 30))
+    let seed = 777
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff * 2 - 1 }
+    for (let j = 0; j < plate.ndof; j++) { plate.q[j] = rnd() * 1e-4; plate.qd[j] = rnd() * 0.2 }
+    plate.beginStep(0, 2e-4)
+    const whole = plate.segQRanges()
+    for (const K of [2, 4, 8]) {
+      const sl = plate.segQSliceRanges(K)
+      for (let sIdx = 0; sIdx < K; sIdx++) {
+        for (let j = 0; j < plate.ndof; j++) {
+          expect(sl.min[sIdx * plate.ndof + j]).toBeGreaterThanOrEqual(whole.min[j] - 1e-15)
+          expect(sl.max[sIdx * plate.ndof + j]).toBeLessThanOrEqual(whole.max[j] + 1e-15)
+        }
+      }
+    }
+  })
+
+  it('sliced proof respects the same domain and fail-closed rules', () => {
+    const sim = createTransientSim(singleToneScore(152, 0, 30), 10, 7, [0, 0],
+      { enabled: true, localBound: true, localSplits: 4 })
+    const t0 = sim.t
+    sim.step()
+    const s = sim as unknown as Priv
+    const dt = sim.t - t0
+    // Calm plate (height 0): inside-square high flight is provable...
+    expect(s.locallyClearSliced(0.05, 0.05, 1e-3, 0.1, 0, 0, t0, t0, sim.t, 4)).toBe(true)
+    // ...but never when the segment leaves [-a,a]^2 or input is non-finite.
+    expect(s.locallyClearSliced(0.10, 0.05, 1e-3, 1000, 0, 0, t0, t0, sim.t, 4)).toBe(false)
+    expect(s.locallyClearSliced(0.05, 0.05, NaN, 0.1, 0, 0, t0, t0, sim.t, 4)).toBe(false)
+    expect(s.locallyClearSliced(0.05, 0.05, 1e-3, 0.1, 0, 0, t0, t0, t0 + dt, 4)).toBe(true)
+  })
+
+  it('splits on/off are bitwise identical (strong, weak, adaptive and fixed)', () => {
+    for (const forceScale of [1, 0.05]) {
+      const mk = (opts: object) => createTransientSim(
+        singleToneScore(152, calibratedForceN() * forceScale, 30), 80, 7, [0, 0],
+        { enabled: true, ...opts })
+      const base = mk({ localBound: false })
+      base.advanceTo(0.6)
+      for (const opts of [
+        { localBound: true, localSplits: 2 },
+        { localBound: true, localSplits: 4 },
+        { localBound: true, localSplits: 8 },
+        { localBound: true, localSplits: 4, localAdaptive: false },
+      ]) {
+        const on = mk(opts)
+        on.advanceTo(0.6)
+        expect(on.nBounce).toBe(base.nBounce)
+        expect(on.nDetach).toBe(base.nDetach)
+        expect(on.nEventCap).toBe(base.nEventCap)
+        expect([...on.state.alive]).toEqual([...base.state.alive])
+        expect([...on.state.sitting]).toEqual([...base.state.sitting])
+        expect(maxPosDiff(on, base)).toBe(0)
+        for (let i = 0; i < on.state.id.length; i++) {
+          expect(on.state.z[i]).toBe(base.state.z[i])
+          expect(on.state.vz[i]).toBe(base.state.vz[i])
+        }
+      }
+    }
+  })
+
+  it('heightAt is bitwise identical to surfAt height', () => {
+    const plate = new TransientPlate(singleToneScore(649, calibratedForceN(), 30))
+    let seed = 20240
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff * 2 - 1 }
+    for (let j = 0; j < plate.ndof; j++) { plate.q[j] = rnd() * 2e-4; plate.qd[j] = rnd() * 0.3 }
+    const out = new Float64Array(5)
+    const a = plate.a
+    const pts: [number, number][] = [[0, 0], [a, 0], [0, -a], [a, a], [1e-15, -1e-15], [0.3, 0.2], [-0.24, 0.05]]
+    for (let n = 0; n < 300; n++) pts.push([rnd() * 0.2, rnd() * 0.2])
+    for (let step = 0; step < 3; step++) {
+      plate.beginStep(step * 1.7e-4, (step + 1) * 1.7e-4)
+      for (const [x, y] of pts) {
+        for (const fr of [0, 0.17, 0.5, 0.99, 1]) {
+          const tau = step * 1.7e-4 + fr * 1.7e-4
+          plate.surfAt(x, y, tau, out)
+          expect(plate.heightAt(x, y, tau)).toBe(out[0])
+        }
+      }
+    }
+  })
+
+  it('sliced proof engages where the whole-segment proof cannot', () => {
+    const mk = (opts: object) => createTransientSim(
+      singleToneScore(152, calibratedForceN(), 30), 200, 7, [0, 0], { enabled: true, ...opts })
+    const whole = mk({ localBound: true })
+    const sliced = mk({ localBound: true, localSplits: 4 })
+    whole.advanceTo(0.6); sliced.advanceTo(0.6)
+    expect(sliced.localSliceAttempts).toBeGreaterThan(0)
+    // The sliced proof must not sample MORE segments than M6-5.
+    expect(sliced.sampledSegments).toBeLessThanOrEqual(whole.sampledSegments)
+  })
+})
+
 describe('M6-4R range initialization', () => {
   it('initialStateRange is bitwise identical to slicing initialState', () => {
     for (const [count, seed] of [[100, 7], [5000, 42], [600000, 1]] as const) {

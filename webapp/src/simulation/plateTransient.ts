@@ -43,9 +43,16 @@ export class TransientPlate {
   private tauQ!: Float64Array
   private tauQd!: Float64Array
   private tauQdd!: Float64Array
+  // M6-6: q-only coefficient cache for heightAt (same A..D arithmetic
+  // as modalCoeffs, so cached q values are bitwise identical).
+  private tauSlotTauQ = new Float64Array(TransientPlate.TAU_SLOTS).fill(NaN)
+  private tauQQ!: Float64Array
   // M6-5: exact per-DOF Hermite q ranges over the current segment.
   private segQMin!: Float64Array
   private segQMax!: Float64Array
+  // M6-6: lazily computed per-slice q ranges for the current segment,
+  // cached against the segment object and slice count.
+  private sliceCache: { seg: object; k: number; min: Float64Array; max: Float64Array } | null = null
   signal: ScoreSignal
   epoch = 0 // score time = physics t - epoch (live score replacement)
 
@@ -83,6 +90,7 @@ export class TransientPlate {
     this.tauQ = new Float64Array(TransientPlate.TAU_SLOTS * n)
     this.tauQd = new Float64Array(TransientPlate.TAU_SLOTS * n)
     this.tauQdd = new Float64Array(TransientPlate.TAU_SLOTS * n)
+    this.tauQQ = new Float64Array(TransientPlate.TAU_SLOTS * n)
     this.segQMin = new Float64Array(n)
     this.segQMax = new Float64Array(n)
     this.setDrive(driveXY[0], driveXY[1])
@@ -281,6 +289,7 @@ export class TransientPlate {
     }
     this.hBound = hb
     this.tauSlotTau.fill(NaN)
+    this.tauSlotTauQ.fill(NaN)
     for (let j = 0; j < n; j++) {
       const r = hermiteQRange(q0[j], qd0[j], q[j], qd[j], t1 - t0)
       // Widen by a rounding hair for bound use (M6-5R): modalCoeffs
@@ -295,6 +304,39 @@ export class TransientPlate {
   /** Exact per-DOF q range over the current segment (M6-5 local bound). */
   segQRanges(): { min: Float64Array; max: Float64Array } {
     return { min: this.segQMin, max: this.segQMax }
+  }
+
+  /** Per-DOF q ranges over each of k equal time slices of the current
+   *  segment (M6-6): min/max are k*ndof arrays, slice s at [s*ndof, ...].
+   *  The Hermite cubic restricted to a slice is the Hermite cubic through
+   *  its endpoint values/derivatives (evaluated with the same modalCoeffs
+   *  arithmetic surfAt uses), so hermiteQRange on those endpoints is the
+   *  exact range over the slice; widened by the same rounding hair as
+   *  segQRanges. Slice s covers [t0 + hseg*s/k, t0 + hseg*(s+1)/k]. */
+  segQSliceRanges(k: number): { min: Float64Array; max: Float64Array } {
+    const seg = this.seg!
+    const c = this.sliceCache
+    if (c && c.seg === seg && c.k === k) return { min: c.min, max: c.max }
+    const n = this.ndof
+    const min = new Float64Array(k * n); const max = new Float64Array(k * n)
+    const hseg = seg.t1 - seg.t0
+    // Copy endpoint modal states first (modalCoeffs slots are reused).
+    const qs = new Float64Array((k + 1) * n); const qds = new Float64Array((k + 1) * n)
+    for (let s = 0; s <= k; s++) {
+      const base = this.modalCoeffs(seg.t0 + (hseg * s) / k)
+      qs.set(this.tauQ.subarray(base, base + n), s * n)
+      qds.set(this.tauQd.subarray(base, base + n), s * n)
+    }
+    for (let s = 0; s < k; s++) {
+      const ta = seg.t0 + (hseg * s) / k; const tb = seg.t0 + (hseg * (s + 1)) / k
+      for (let j = 0; j < n; j++) {
+        const r = hermiteQRange(qs[s * n + j], qds[s * n + j], qs[(s + 1) * n + j], qds[(s + 1) * n + j], tb - ta)
+        const wden = 1e-12 * (1 + Math.abs(r[0]) + Math.abs(r[1]))
+        min[s * n + j] = r[0] - wden; max[s * n + j] = r[1] + wden
+      }
+    }
+    this.sliceCache = { seg, k, min, max }
+    return { min, max }
   }
 
   /** Per-tau Hermite modal coefficients (q, qd, qdd per DOF) for the
@@ -365,6 +407,60 @@ export class TransientPlate {
       hh += q * W; hx += q * Wx; hy += q * Wy; uz += qd * W; wtt += qdd * W
     }
     out[0] = hh; out[1] = hx; out[2] = hy; out[3] = uz; out[4] = wtt
+  }
+
+  /** q-only modal coefficients (M6-6): identical A..D expressions to
+   *  modalCoeffs, so the returned q values are bitwise the same; only
+   *  the qd/qdd work is skipped. Separate slot cache. */
+  private modalCoeffsQ(tau: number): number {
+    const seg = this.seg!
+    const slots = TransientPlate.TAU_SLOTS
+    const hbits = (tau * 2654435761) | 0
+    const slot = (hbits ^ (hbits >>> 3)) & (slots - 1)
+    const n = this.ndof
+    const base = slot * n
+    if (this.tauSlotTauQ[slot] === tau) return base
+    this.tauSlotTauQ[slot] = tau
+    const hseg = seg.t1 - seg.t0
+    const s = (tau - seg.t0) / hseg
+    const s2 = s * s; const s3 = s2 * s
+    const A = 2 * s3 - 3 * s2 + 1; const B = (s3 - 2 * s2 + s) * hseg
+    const C = -2 * s3 + 3 * s2; const D = (s3 - s2) * hseg
+    const { q0, qd0, q1, qd1 } = seg
+    for (let j = 0; j < n; j++) {
+      this.tauQQ[base + j] = A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]
+    }
+    return base
+  }
+
+  /** Plate height h(x, y, tau) only (M6-6): replicates surfAt's hh
+   *  accumulation term for term (same radial bin, same trig recurrence,
+   *  same summation order), so the result is bitwise identical to
+   *  surfAt's out[0]. Gradients / velocity / acceleration are skipped.
+   *  Used where only the height is compared (contact sampling and
+   *  bisection); the contact resolution itself still uses surfAt. */
+  heightAt(x: number, y: number, tau: number): number {
+    const seg = this.seg
+    if (!seg) return 0
+    const base = this.modalCoeffsQ(tau)
+    const r = Math.hypot(x, y)
+    const idx = Math.min((r * (this.ng1 / this.a)) | 0, this.ng1)
+    const rs = r < 1e-12 ? 1e-12 : r
+    const c = x / rs; const sn = y / rs
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
+    for (let m = 2; m <= 4; m++) {
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
+    }
+    const stride = BD.ngrid
+    let hh = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const m = this.dofM[j]
+      const R = this.Rflat[this.dofMode[j] * stride + idx]
+      const W = m === 0 ? R : this.dofCos[j] ? R * CM[m] : R * SM[m]
+      hh += this.tauQQ[base + j] * W
+    }
+    return hh
   }
 
   /** Pre-M6-4A surfAt, kept verbatim as the comparison reference. */

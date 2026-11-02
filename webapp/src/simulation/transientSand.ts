@@ -40,6 +40,15 @@ export interface SleepOptions {
    *  the traversed range x current segment). Default on (adopted by
    *  measurement; bitwise-identical acceptance). Independent of sleep. */
   localBound?: boolean
+  /** M6-6: time slices per plate segment for a tighter non-contact
+   *  proof. 1 (default) is the M6-5 whole-segment proof. >1 subdivides
+   *  the segment into this many slices, each with its own exact q range
+   *  and per-piece ballistic minimum / traversed-cell box. */
+  localSplits?: number
+  /** M6-6: with localSplits > 1, try the whole-segment proof first and
+   *  subdivide only when it fails (default true). false goes straight
+   *  to the sliced proof. */
+  localAdaptive?: boolean
 }
 
 export class TransientSandSim {
@@ -79,8 +88,15 @@ export class TransientSandSim {
   globalSkips = 0
   localSkips = 0
   sampledSegments = 0
+  // M6-6 sliced-proof counters.
+  localSliceAttempts = 0
+  localSliceSkips = 0
+  localPieceChecks = 0
+  cellBoundComputations = 0
   private cellHMax: Float64Array | null = null
   private cellHStamp: Int32Array | null = null
+  private cellHMaxK: Float64Array | null = null
+  private cellHStampK: Int32Array | null = null
   private stepSeq = 0
   private static readonly GRID = 64
   private cellPhiLo: Float64Array | null = null
@@ -120,6 +136,11 @@ export class TransientSandSim {
     this.cellLbHi = new Float64Array(G * G)
     this.cellHMax = new Float64Array(G * G)
     this.cellHStamp = new Int32Array(G * G).fill(-1)
+    const k = this.splitsK()
+    if (k > 1) {
+      this.cellHMaxK = new Float64Array(G * G * k)
+      this.cellHStampK = new Int32Array(G * G * k).fill(-1)
+    }
     const lo = new Float64Array(nd); const hi = new Float64Array(nd)
     // Expand each cell rectangle by a hair (M6-5R): covers the ulp-scale
     // mismatch between the floor() cell mapping and the rectangle edges,
@@ -167,9 +188,15 @@ export class TransientSandSim {
   /** Exact upper bound of plate height over one cell x current segment:
    *  interval product of the cell Phi range and the segment q range.
    *  Computed lazily per touched cell, stamped by step sequence. */
+  private splitsK(): number {
+    const s = this.sleep.localSplits
+    return s !== undefined && Number.isFinite(s) && s > 1 ? Math.floor(s) : 1
+  }
+
   private cellHeightMax(cell: number): number {
     if (this.cellHStamp![cell] === this.stepSeq) return this.cellHMax![cell]
     this.cellHStamp![cell] = this.stepSeq
+    this.cellBoundComputations++
     const { min: qLo, max: qHi } = this.plate.segQRanges()
     const nd = this.plate.ndof
     const base = cell * nd
@@ -179,6 +206,26 @@ export class TransientSandSim {
       up += Math.max(plo * qLo[j], plo * qHi[j], phi * qLo[j], phi * qHi[j])
     }
     this.cellHMax![cell] = up
+    return up
+  }
+
+  /** Exact upper bound of plate height over one cell x one time slice
+   *  of the current segment (M6-6): interval product of the cell Phi
+   *  range and the slice q range. Lazily computed, stamped by step. */
+  private cellHeightMaxSlice(cell: number, slice: number, k: number): number {
+    const idx = cell * k + slice
+    if (this.cellHStampK![idx] === this.stepSeq) return this.cellHMaxK![idx]
+    this.cellHStampK![idx] = this.stepSeq
+    this.cellBoundComputations++
+    const { min: qLo, max: qHi } = this.plate.segQSliceRanges(k)
+    const nd = this.plate.ndof
+    const base = cell * nd; const sb = slice * nd
+    let up = 0
+    for (let j = 0; j < nd; j++) {
+      const plo = this.cellPhiLo![base + j]; const phi = this.cellPhiHi![base + j]
+      up += Math.max(plo * qLo[sb + j], plo * qHi[sb + j], phi * qLo[sb + j], phi * qHi[sb + j])
+    }
+    this.cellHMaxK![idx] = up
     return up
   }
 
@@ -209,6 +256,54 @@ export class TransientSandSim {
       for (let gx = gx0; gx <= gx1; gx++) {
         const bound = this.cellHeightMax(gy * G + gx)
         if (!Number.isFinite(bound) || !(zMin > bound + 1e-9)) return false
+      }
+    }
+    return true
+  }
+
+  /** M6-6 sliced proof: same guarantee as locallyClear, but the plate
+   *  segment [tSeg, tNew] is split into k time slices and the ballistic
+   *  segment (origin (x0,y0,z0) at time cur, velocity (vx0,vy0,vz0)) is
+   *  proven piece by piece. Each piece lies inside one slice, so it can
+   *  use that slice's tighter q range, its own ballistic minimum (the
+   *  concave parabola attains its minimum at piece endpoints), and its
+   *  own smaller traversed-cell box. Proving every piece proves the
+   *  whole segment; any unproven piece falls back to the sampled
+   *  search for the whole segment (particle state is never advanced
+   *  by pieces). Same domain restriction as locallyClear (M6-5R). */
+  private locallyClearSliced(x0: number, y0: number, z0: number,
+    vx0: number, vy0: number, vz0: number,
+    cur: number, tSeg: number, tNew: number, k: number): boolean {
+    if (!Number.isFinite(x0) || !Number.isFinite(y0) || !Number.isFinite(z0)
+      || !Number.isFinite(vx0) || !Number.isFinite(vy0) || !Number.isFinite(vz0)) return false
+    const Gn = TransientSandSim.GRID; const a = this.plate.a
+    const rem = tNew - cur
+    const xEnd = x0 + vx0 * rem; const yEnd = y0 + vy0 * rem
+    if (Math.min(x0, xEnd) < -a || Math.max(x0, xEnd) > a
+      || Math.min(y0, yEnd) < -a || Math.max(y0, yEnd) > a) return false
+    const hseg = tNew - tSeg
+    if (!(hseg > 0)) return false
+    // Ensure slice ranges exist for this segment before stamping cells.
+    this.plate.segQSliceRanges(k)
+    const zAt = (d: number): number => z0 + vz0 * d - 0.5 * G * d * d
+    for (let s = 0; s < k; s++) {
+      const pa = Math.max(cur, tSeg + (hseg * s) / k)
+      const pb = Math.min(tNew, tSeg + (hseg * (s + 1)) / k)
+      if (pb <= pa) continue
+      this.localPieceChecks++
+      const da = pa - cur; const db = pb - cur
+      const zMinPiece = Math.min(zAt(da), zAt(db))
+      const xa = x0 + vx0 * da; const ya = y0 + vy0 * da
+      const xb = x0 + vx0 * db; const yb = y0 + vy0 * db
+      const gx0 = Math.min(Gn - 1, Math.max(0, Math.floor(((Math.min(xa, xb) + a) / (2 * a)) * Gn)))
+      const gx1 = Math.min(Gn - 1, Math.max(0, Math.floor(((Math.max(xa, xb) + a) / (2 * a)) * Gn)))
+      const gy0 = Math.min(Gn - 1, Math.max(0, Math.floor(((Math.min(ya, yb) + a) / (2 * a)) * Gn)))
+      const gy1 = Math.min(Gn - 1, Math.max(0, Math.floor(((Math.max(ya, yb) + a) / (2 * a)) * Gn)))
+      for (let gy = gy0; gy <= gy1; gy++) {
+        for (let gx = gx0; gx <= gx1; gx++) {
+          const bound = this.cellHeightMaxSlice(gy * Gn + gx, s, k)
+          if (!Number.isFinite(bound) || !(zMinPiece > bound + 1e-9)) return false
+        }
       }
     }
     return true
@@ -538,20 +633,33 @@ export class TransientSandSim {
             cur = tNew; break
           }
           // M6-5: tighter proof over the traversed cells x this segment.
-          if (this.useLocalBound()
-              && this.locallyClear(x0, y0, x0 + vx0 * rem, y0 + vy0 * rem, zMin)) {
-            this.localSkips++
-            st.x[i] = x0 + vx0 * rem; st.y[i] = y0 + vy0 * rem
-            st.z[i] = zEnd; st.vz[i] = vz0 - G * rem
-            cur = tNew; break
+          // M6-6: optionally subdivide into time slices (proof only; the
+          // acceptance update below is the same ballistic step either way).
+          if (this.useLocalBound()) {
+            const k = this.splitsK()
+            let clear = false
+            if (k <= 1 || this.sleep.localAdaptive !== false) {
+              clear = this.locallyClear(x0, y0, x0 + vx0 * rem, y0 + vy0 * rem, zMin)
+            }
+            if (!clear && k > 1) {
+              this.localSliceAttempts++
+              clear = this.locallyClearSliced(x0, y0, z0, vx0, vy0, vz0, cur, t, tNew, k)
+              if (clear) this.localSliceSkips++
+            }
+            if (clear) {
+              this.localSkips++
+              st.x[i] = x0 + vx0 * rem; st.y[i] = y0 + vy0 * rem
+              st.z[i] = zEnd; st.vz[i] = vz0 - G * rem
+              cur = tNew; break
+            }
           }
         }
         this.sampledSegments++
         let firstBad = -1
         for (let k = 1; k <= CONTACT_SAMPLES; k++) {
           const tau = cur + rem * (k / CONTACT_SAMPLES); const d = tau - cur
-          pl.surfAt(x0 + vx0 * d, y0 + vy0 * d, tau, S5)
-          if (z0 + vz0 * d - 0.5 * G * d * d - S5[0] <= 0) { firstBad = k; break }
+          // Height-only evaluation (bitwise identical to surfAt's h).
+          if (z0 + vz0 * d - 0.5 * G * d * d - pl.heightAt(x0 + vx0 * d, y0 + vy0 * d, tau) <= 0) { firstBad = k; break }
         }
         if (firstBad < 0) {
           const d = rem
@@ -563,8 +671,7 @@ export class TransientSandSim {
         let hi = cur + rem * (firstBad / CONTACT_SAMPLES)
         for (let k = 0; k < EVENT_BISECT_ITERS; k++) {
           const tm = 0.5 * (lo + hi); const d = tm - cur
-          pl.surfAt(x0 + vx0 * d, y0 + vy0 * d, tm, S5)
-          if (z0 + vz0 * d - 0.5 * G * d * d <= S5[0]) hi = tm; else lo = tm
+          if (z0 + vz0 * d - 0.5 * G * d * d <= pl.heightAt(x0 + vx0 * d, y0 + vy0 * d, tm)) hi = tm; else lo = tm
         }
         const tc = 0.5 * (lo + hi); const d = tc - cur
         const xc = x0 + vx0 * d; const yc = y0 + vy0 * d
@@ -615,8 +722,7 @@ export class TransientSandSim {
             const d = subEnd - cur
             const xf = st.x[i] + st.vx[i] * d; const yf = st.y[i] + st.vy[i] * d
             const zf = st.z[i] + st.vz[i] * d - 0.5 * G * d * d
-            pl.surfAt(xf, yf, subEnd, S5)
-            if (zf >= S5[0]) {
+            if (zf >= pl.heightAt(xf, yf, subEnd)) {
               st.x[i] = xf; st.y[i] = yf; st.z[i] = zf; st.vz[i] -= G * d; cur = subEnd; break
             }
             const x0 = st.x[i]; const y0 = st.y[i]; const z0 = st.z[i]
@@ -624,8 +730,7 @@ export class TransientSandSim {
             let lo2 = cur; let hi2 = subEnd
             for (let k = 0; k < EVENT_BISECT_ITERS; k++) {
               const tm = 0.5 * (lo2 + hi2); const dd = tm - cur
-              pl.surfAt(x0 + vx0 * dd, y0 + vy0 * dd, tm, S5)
-              if (z0 + vz0 * dd - 0.5 * G * dd * dd <= S5[0]) hi2 = tm; else lo2 = tm
+              if (z0 + vz0 * dd - 0.5 * G * dd * dd <= pl.heightAt(x0 + vx0 * dd, y0 + vy0 * dd, tm)) hi2 = tm; else lo2 = tm
             }
             const tc = 0.5 * (lo2 + hi2); const dd = tc - cur
             const xc = x0 + vx0 * dd; const yc = y0 + vy0 * dd; const vzc = vz0 - G * dd
