@@ -2,11 +2,13 @@
 //   PHYSI_BENCH=1 npx vitest run src/simulation/__tests__/bench_m66.test.ts
 // Results are appended to webapp/bench_m66_out.txt (not committed).
 import { it } from 'vitest'
+// @ts-expect-error bench-only node import (runs under vitest node env)
 import { appendFileSync } from 'node:fs'
 import { singleToneScore } from '../sequence'
 import { createTransientSim, calibratedForceN, type SleepOptions } from '../transientSand'
 
-const benchIt = process.env.PHYSI_BENCH ? it : it.skip
+const proc = (globalThis as { process?: { env: Record<string, string | undefined>; memoryUsage: () => { rss: number } } }).process
+const benchIt = proc?.env.PHYSI_BENCH ? it : it.skip
 const OUT = new URL('../../../bench_m66_out.txt', import.meta.url).pathname
 const log = (s: string) => { console.log(s); appendFileSync(OUT, s + '\n') }
 
@@ -31,7 +33,7 @@ benchIt('M6-6 sliced proof bench', () => {
       local: sim.localSkips, sliceTry: sim.localSliceAttempts, sliceSkip: sim.localSliceSkips,
       pieces: sim.localPieceChecks, boundComp: sim.cellBoundComputations,
       bounce: sim.nBounce, detach: sim.nDetach, sleeping: sim.nSleeping,
-      rss: Math.round(process.memoryUsage().rss / 1048576),
+      rss: Math.round((proc?.memoryUsage().rss ?? 0) / 1048576),
     }
   }
   run({ enabled: true }, 300, F, 0.2) // warmup
