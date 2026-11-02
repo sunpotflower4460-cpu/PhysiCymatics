@@ -79,8 +79,12 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
     wk.postMessage({ type: 'init', gamma: 80, count: 500, seed: seed0 })
     const pool = new TransientPool()
     poolRef.current = pool
-    // Measurement hook (dev diagnostics): pool round timing / workers.
-    ;(window as unknown as { __physiPool?: TransientPool }).__physiPool = pool
+    // Measurement hook (dev diagnostics only): exposed solely on the
+    // dev/measurement routes (?count= / ?workers=), never in normal use.
+    const qs = new URLSearchParams(window.location.search)
+    if (qs.has('count') || qs.has('workers')) {
+      ;(window as unknown as { __physiPool?: TransientPool }).__physiPool = pool
+    }
     pool.onBatch = (b) => {
       b.frames.forEach((f, k) => frameCacheRef.current.apply(f, b.starts[k], b.initialCount))
       setKind('transient')
