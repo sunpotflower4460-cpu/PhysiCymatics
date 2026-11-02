@@ -71,6 +71,8 @@ export class TransientPlate {
   // With center drive only the m=0 modes are ever live.
   liveDofs!: Int32Array
   liveCount = 0
+  /** A/B measurement switch (bench only): false evaluates all DOFs. */
+  liveMaskEnabled = true
 
   constructor(score: PerformanceScore, driveXY: [number, number] = [0, 0]) {
     this.signal = new ScoreSignal(score)
@@ -313,8 +315,12 @@ export class TransientPlate {
     this.tauSlotTauQ.fill(NaN)
     this.tauSlotTauQH.fill(NaN)
     let lc = 0
-    for (let j = 0; j < n; j++) {
-      if (q0[j] !== 0 || qd0[j] !== 0 || q[j] !== 0 || qd[j] !== 0) this.liveDofs[lc++] = j
+    if (this.liveMaskEnabled) {
+      for (let j = 0; j < n; j++) {
+        if (q0[j] !== 0 || qd0[j] !== 0 || q[j] !== 0 || qd[j] !== 0) this.liveDofs[lc++] = j
+      }
+    } else {
+      for (let j = 0; j < n; j++) this.liveDofs[lc++] = j
     }
     this.liveCount = lc
     for (let j = 0; j < n; j++) {
