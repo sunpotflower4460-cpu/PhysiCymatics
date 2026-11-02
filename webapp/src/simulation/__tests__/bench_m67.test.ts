@@ -58,6 +58,7 @@ benchIt('M6-7 profile + A/B', () => {
         case 'off': return { name: 'off', opts: { enabled: true, localBound: false } }
         case 'k1': return { name: 'k1', opts: { enabled: true, localBound: true } }
         case 'nosleep': return { name: 'nosleep', opts: { enabled: false } }
+        case 'locsleep': return { name: 'locsleep', opts: { enabled: true, localSleep: true } }
         case 'base': return { name: 'base', opts: { enabled: true } }
         default: return { name: m, opts: { enabled: true, ...(JSON.parse(m) as object) } }
       }

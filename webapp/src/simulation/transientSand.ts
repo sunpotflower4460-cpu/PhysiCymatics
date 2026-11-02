@@ -50,6 +50,11 @@ export interface SleepOptions {
    *  subdivide only when it fails (default true). false goes straight
    *  to the sliced proof. */
   localAdaptive?: boolean
+  /** M6-7B: localize the flying-sleep height bound to the cells the
+   *  ballistic trajectory traverses over the lookahead window
+   *  (instead of the whole-plate bound). Default off until adopted
+   *  by measurement. Only meaningful when sleep is enabled. */
+  localSleep?: boolean
 }
 
 export class TransientSandSim {
@@ -97,6 +102,7 @@ export class TransientSandSim {
   // M6-7 profiling counters.
   bisectIters = 0
   sittingSteps = 0
+  localSleepWins = 0
   private cellHMax: Float64Array | null = null
   private cellHStamp: Int32Array | null = null
   private cellHMaxK: Float64Array | null = null
@@ -108,6 +114,8 @@ export class TransientSandSim {
   private cellLb: Float64Array | null = null
   private cellLbHi: Float64Array | null = null
   private cellLbFor: object | null = null
+  private cellHWin: Float64Array | null = null
+  private cellHWinFor: object | null = null
   constructor(
     readonly plate: TransientPlate,
     readonly state: ParticleState,
@@ -124,7 +132,8 @@ export class TransientSandSim {
     this.activePos = new Int32Array(n)
     for (let i = 0; i < n; i++) { this.activeList[i] = i; this.activePos[i] = i }
     this.activeCount = n
-    if (this.useRegions() || this.sleep.localBound !== false) this.initRegions()
+    if (this.useRegions() || this.sleep.localBound !== false
+      || (this.sleep.enabled && this.sleep.localSleep)) this.initRegions()
   }
 
   private useLocalBound(): boolean { return this.sleep.localBound !== false && !!this.cellPhiLo }
@@ -138,6 +147,7 @@ export class TransientSandSim {
     this.cellPhiHi = new Float64Array(G * G * nd)
     this.cellLb = new Float64Array(G * G)
     this.cellLbHi = new Float64Array(G * G)
+    this.cellHWin = new Float64Array(G * G)
     this.cellHMax = new Float64Array(G * G)
     this.cellHStamp = new Int32Array(G * G).fill(-1)
     const k = this.splitsK()
@@ -186,6 +196,27 @@ export class TransientSandSim {
       }
       out[c] = lb
       outHi[c] = ub
+    }
+  }
+
+  /** Cell-wide plate-height upper bounds over the lookahead window
+   *  (M6-7B): interval product of cell Phi ranges and the window's
+   *  exact q ranges. Cached per lookahead object like ensureCellLb. */
+  private ensureCellHWin(): void {
+    const lc = this.lookCache!
+    if (this.cellHWinFor === lc) return
+    this.cellHWinFor = lc
+    const G = TransientSandSim.GRID; const nd = this.plate.ndof
+    const loA = this.cellPhiLo!; const hiA = this.cellPhiHi!; const out = this.cellHWin!
+    for (let c = 0; c < G * G; c++) {
+      let up = 0
+      const base = c * nd
+      for (let j = 0; j < nd; j++) {
+        const plo = loA[base + j]; const phi = hiA[base + j]
+        const q0 = lc.qMin[j]; const q1 = lc.qMax[j]
+        up += Math.max(plo * q0, plo * q1, phi * q0, phi * q1)
+      }
+      out[c] = up
     }
   }
 
@@ -494,14 +525,44 @@ export class TransientSandSim {
     this.ensureLookahead(tNew)
     const lc = this.lookCache!
     const z0 = st.z[i]; const vz0 = st.vz[i]
+    const px = st.x[i]; const py = st.y[i]; const vx = st.vx[i]; const vy = st.vy[i]
+    // M6-7B localized bound: per-cell window height bounds over the
+    // traversed box instead of the whole-plate bound. The bound is an
+    // interval product of exact ranges (cell Phi x window q), so the
+    // safety argument is the same as the global one, only tighter.
+    // Domain and fail-closed rules match locallyClear (M6-5R): a box
+    // leaving [-a,a]^2 is never safe here (the disk-exit cap below
+    // still applies; within it endpoints stay in the disk).
+    const useLocal = !!this.sleep.localSleep && !!this.cellHWin
+      && Number.isFinite(px) && Number.isFinite(py) && Number.isFinite(vx) && Number.isFinite(vy)
+      && Number.isFinite(z0) && Number.isFinite(vz0)
+    if (useLocal) this.ensureCellHWin()
     // Exact Hermite height bound over the window: |h| <= sum max|q_j|.
     let hBoundW = 0
-    for (let j = 0; j < pl.ndof; j++) hBoundW += Math.max(Math.abs(lc.qMin[j]), Math.abs(lc.qMax[j]))
+    if (!useLocal) {
+      for (let j = 0; j < pl.ndof; j++) hBoundW += Math.max(Math.abs(lc.qMin[j]), Math.abs(lc.qMax[j]))
+    }
     const safe = (d: number): boolean => {
       const zEnd = z0 + vz0 * d - 0.5 * G * d * d
       const tv = Math.min(Math.max(vz0 / G, 0), d)
       const zMin = Math.min(z0, zEnd, z0 + vz0 * tv - 0.5 * G * tv * tv)
-      return zMin > hBoundW + SLEEP_HEIGHT_MARGIN
+      if (!useLocal) return zMin > hBoundW + SLEEP_HEIGHT_MARGIN
+      const a = pl.a; const Gn = TransientSandSim.GRID
+      const x1 = px + vx * d; const y1 = py + vy * d
+      const minX = Math.min(px, x1); const maxX = Math.max(px, x1)
+      const minY = Math.min(py, y1); const maxY = Math.max(py, y1)
+      if (minX < -a || maxX > a || minY < -a || maxY > a) return false
+      const lim = zMin - SLEEP_HEIGHT_MARGIN
+      const gx0 = Math.min(Gn - 1, Math.max(0, Math.floor(((minX + a) / (2 * a)) * Gn)))
+      const gx1 = Math.min(Gn - 1, Math.max(0, Math.floor(((maxX + a) / (2 * a)) * Gn)))
+      const gy0 = Math.min(Gn - 1, Math.max(0, Math.floor(((minY + a) / (2 * a)) * Gn)))
+      const gy1 = Math.min(Gn - 1, Math.max(0, Math.floor(((maxY + a) / (2 * a)) * Gn)))
+      for (let gy = gy0; gy <= gy1; gy++) {
+        for (let gx = gx0; gx <= gx1; gx++) {
+          if (!(this.cellHWin![gy * Gn + gx] < lim)) return false
+        }
+      }
+      return true
     }
     if (!safe(0)) return
     let lo = 0; let hi = Math.min(SLEEP_WINDOW_S, lc.end - tNew)
@@ -513,7 +574,6 @@ export class TransientSandSim {
     } else lo = hi
     // Edge-exit time for straight xy motion from inside the disk.
     let wake = tNew + lo
-    const px = st.x[i]; const py = st.y[i]; const vx = st.vx[i]; const vy = st.vy[i]
     const A = vx * vx + vy * vy
     if (A > 0) {
       const B = 2 * (px * vx + py * vy)
@@ -525,6 +585,7 @@ export class TransientSandSim {
       }
     }
     if (!(wake > tNew + 8 * this.dtNow())) return
+    if (useLocal) this.localSleepWins++
     this.setSleeping(i, 1)
     this.wakeT[i] = wake
     this.sleepT0[i] = tNew
