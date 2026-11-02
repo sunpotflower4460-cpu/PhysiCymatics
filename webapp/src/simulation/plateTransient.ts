@@ -283,7 +283,12 @@ export class TransientPlate {
     this.tauSlotTau.fill(NaN)
     for (let j = 0; j < n; j++) {
       const r = hermiteQRange(q0[j], qd0[j], q[j], qd[j], t1 - t0)
-      this.segQMin[j] = r[0]; this.segQMax[j] = r[1]
+      // Widen by a rounding hair for bound use (M6-5R): modalCoeffs
+      // evaluates the same cubic in a different operation order, so the
+      // implemented q(tau) can differ from the exact range by ulps.
+      // hermiteQRange itself stays exact for its other callers.
+      const wden = 1e-12 * (1 + Math.abs(r[0]) + Math.abs(r[1]))
+      this.segQMin[j] = r[0] - wden; this.segQMax[j] = r[1] + wden
     }
   }
 

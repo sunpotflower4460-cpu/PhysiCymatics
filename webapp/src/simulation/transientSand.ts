@@ -121,9 +121,15 @@ export class TransientSandSim {
     this.cellHMax = new Float64Array(G * G)
     this.cellHStamp = new Int32Array(G * G).fill(-1)
     const lo = new Float64Array(nd); const hi = new Float64Array(nd)
+    // Expand each cell rectangle by a hair (M6-5R): covers the ulp-scale
+    // mismatch between the floor() cell mapping and the rectangle edges,
+    // and between bbox endpoints (x0+vx*rem) and sampled positions
+    // (x0+vx*d, d formed by tau-cur). Wider ranges stay conservative.
+    const eps = a * 1e-12
     for (let gy = 0; gy < G; gy++) {
       for (let gx = 0; gx < G; gx++) {
-        this.plate.cellPhiRanges(-a + gx * w, -a + (gx + 1) * w, -a + gy * w, -a + (gy + 1) * w, lo, hi)
+        this.plate.cellPhiRanges(-a + gx * w - eps, -a + (gx + 1) * w + eps,
+          -a + gy * w - eps, -a + (gy + 1) * w + eps, lo, hi)
         const base = (gy * G + gx) * nd
         this.cellPhiLo.set(lo, base)
         this.cellPhiHi.set(hi, base)
@@ -179,16 +185,30 @@ export class TransientSandSim {
   /** True when the ballistic segment from (x0,y0) with min height zMin is
    *  PROVABLY above the plate over the whole segment: zMin exceeds the
    *  exact cell height bound over every cell intersecting the segment's
-   *  bounding box (plus a 1e-9 m rounding margin). */
+   *  bounding box (plus a 1e-9 m rounding margin).
+   *
+   *  Domain (M6-5R audit): the precomputed cell Phi ranges cover the
+   *  closed square [-a,a]^2 ONLY. Outside it, surfAt/phiAll evaluate
+   *  R[last radial bin] * trig(theta) with the true theta, which clamped
+   *  edge cells do not contain (measured violations in most DOFs, e.g.
+   *  at (2a, 0.05)). A segment whose bounding box leaves the square is
+   *  therefore never proven here and falls back to the sampled search,
+   *  exactly as before M6-5. Non-finite input likewise fails closed. */
   private locallyClear(x0: number, y0: number, x1: number, y1: number, zMin: number): boolean {
+    if (!Number.isFinite(x0) || !Number.isFinite(y0) || !Number.isFinite(x1)
+      || !Number.isFinite(y1) || !Number.isFinite(zMin)) return false
     const G = TransientSandSim.GRID; const a = this.plate.a
-    const gx0 = Math.min(G - 1, Math.max(0, Math.floor(((Math.min(x0, x1) + a) / (2 * a)) * G)))
-    const gx1 = Math.min(G - 1, Math.max(0, Math.floor(((Math.max(x0, x1) + a) / (2 * a)) * G)))
-    const gy0 = Math.min(G - 1, Math.max(0, Math.floor(((Math.min(y0, y1) + a) / (2 * a)) * G)))
-    const gy1 = Math.min(G - 1, Math.max(0, Math.floor(((Math.max(y0, y1) + a) / (2 * a)) * G)))
+    const minX = Math.min(x0, x1); const maxX = Math.max(x0, x1)
+    const minY = Math.min(y0, y1); const maxY = Math.max(y0, y1)
+    if (minX < -a || maxX > a || minY < -a || maxY > a) return false
+    const gx0 = Math.min(G - 1, Math.max(0, Math.floor(((minX + a) / (2 * a)) * G)))
+    const gx1 = Math.min(G - 1, Math.max(0, Math.floor(((maxX + a) / (2 * a)) * G)))
+    const gy0 = Math.min(G - 1, Math.max(0, Math.floor(((minY + a) / (2 * a)) * G)))
+    const gy1 = Math.min(G - 1, Math.max(0, Math.floor(((maxY + a) / (2 * a)) * G)))
     for (let gy = gy0; gy <= gy1; gy++) {
       for (let gx = gx0; gx <= gx1; gx++) {
-        if (zMin <= this.cellHeightMax(gy * G + gx) + 1e-9) return false
+        const bound = this.cellHeightMax(gy * G + gx)
+        if (!Number.isFinite(bound) || !(zMin > bound + 1e-9)) return false
       }
     }
     return true
@@ -334,7 +354,10 @@ export class TransientSandSim {
     this.sleepEvaluations++
     this.ensureLookahead(tNew)
     const lc = this.lookCache!
-    if (this.cellLb) {
+    // Region bounds cover [-a,a]^2 only (M6-5R): a seated point outside
+    // the square (possible transiently after an out-of-disk contact)
+    // must take the exact phiAll path below, not the clamped cell.
+    if (this.cellLb && Math.abs(st.x[i]) <= pl.a && Math.abs(st.y[i]) <= pl.a) {
       // Region shortcut: the cell bound holds at every point of the cell,
       // so a safe cell bound proves this particle safe without phiAll.
       this.regionChecks++
