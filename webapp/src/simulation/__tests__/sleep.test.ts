@@ -353,6 +353,32 @@ describe('M6-6 sliced non-contact proof', () => {
     }
   })
 
+  it('live-DOF mask: dead DOFs are skipped bitwise (M6-8A)', () => {
+    const plate = new TransientPlate(singleToneScore(152, 0, 30))
+    // Excite only DOFs 1 and 5; all other Hermite endpoints stay zero.
+    plate.q[1] = 1.3e-4; plate.qd[1] = -0.21; plate.q[5] = -2e-5; plate.qd[5] = 0.07
+    plate.beginStep(0, 1.7e-4)
+    expect(plate.liveCount).toBe(2)
+    expect([...plate.liveDofs.subarray(0, plate.liveCount)]).toEqual([1, 5])
+    const out = new Float64Array(5); const out2 = new Float64Array(2)
+    let seed = 4242
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff * 2 - 1 }
+    for (let n = 0; n < 500; n++) {
+      const x = rnd() * 0.2; const y = rnd() * 0.2; const tau = Math.abs(rnd()) * 1.7e-4
+      plate.surfAt(x, y, tau, out)
+      expect(plate.heightAt(x, y, tau)).toBe(out[0])
+      expect(plate.heightAtFused(x, y, tau)).toBe(out[0])
+      plate.heightAccelAt(x, y, tau, out2)
+      expect(out2[0]).toBe(out[0])
+      expect(out2[1]).toBe(out[4])
+      expect(plate.accelAt(x, y, tau)).toBe(out[4])
+    }
+    // With forcing, driven m=0 DOFs join the live set in segment 1.
+    const driven = new TransientPlate(singleToneScore(152, calibratedForceN(), 30))
+    driven.beginStep(0, 1.7e-4)
+    expect(driven.liveCount).toBe(2) // exactly the two m=0 modes (center drive)
+  })
+
   it('sliced proof engages where the whole-segment proof cannot', () => {
     const mk = (opts: object) => createTransientSim(
       singleToneScore(152, calibratedForceN(), 30), 200, 7, [0, 0], { enabled: true, ...opts })
