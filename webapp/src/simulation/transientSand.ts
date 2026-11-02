@@ -36,6 +36,10 @@ export interface SleepOptions {
   scheduler?: boolean
   /** M6-3B region-shared sitting-sleep evaluation; default on when enabled. */
   regions?: boolean
+  /** M6-5 conservative local non-contact proof (cell height bound over
+   *  the traversed range x current segment). Default on (adopted by
+   *  measurement; bitwise-identical acceptance). Independent of sleep. */
+  localBound?: boolean
 }
 
 export class TransientSandSim {
@@ -70,6 +74,14 @@ export class TransientSandSim {
   regionHits = 0
   regionRejects = 0
   regionChecks = 0
+  // M6-5 local non-contact proof counters.
+  flySegments = 0
+  globalSkips = 0
+  localSkips = 0
+  sampledSegments = 0
+  private cellHMax: Float64Array | null = null
+  private cellHStamp: Int32Array | null = null
+  private stepSeq = 0
   private static readonly GRID = 64
   private cellPhiLo: Float64Array | null = null
   private cellPhiHi: Float64Array | null = null
@@ -92,8 +104,10 @@ export class TransientSandSim {
     this.activePos = new Int32Array(n)
     for (let i = 0; i < n; i++) { this.activeList[i] = i; this.activePos[i] = i }
     this.activeCount = n
-    if (this.useRegions()) this.initRegions()
+    if (this.useRegions() || this.sleep.localBound !== false) this.initRegions()
   }
+
+  private useLocalBound(): boolean { return this.sleep.localBound !== false && !!this.cellPhiLo }
 
   private useRegions(): boolean { return this.sleep.enabled && this.sleep.regions !== false }
 
@@ -104,6 +118,8 @@ export class TransientSandSim {
     this.cellPhiHi = new Float64Array(G * G * nd)
     this.cellLb = new Float64Array(G * G)
     this.cellLbHi = new Float64Array(G * G)
+    this.cellHMax = new Float64Array(G * G)
+    this.cellHStamp = new Int32Array(G * G).fill(-1)
     const lo = new Float64Array(nd); const hi = new Float64Array(nd)
     for (let gy = 0; gy < G; gy++) {
       for (let gx = 0; gx < G; gx++) {
@@ -140,6 +156,42 @@ export class TransientSandSim {
       out[c] = lb
       outHi[c] = ub
     }
+  }
+
+  /** Exact upper bound of plate height over one cell x current segment:
+   *  interval product of the cell Phi range and the segment q range.
+   *  Computed lazily per touched cell, stamped by step sequence. */
+  private cellHeightMax(cell: number): number {
+    if (this.cellHStamp![cell] === this.stepSeq) return this.cellHMax![cell]
+    this.cellHStamp![cell] = this.stepSeq
+    const { min: qLo, max: qHi } = this.plate.segQRanges()
+    const nd = this.plate.ndof
+    const base = cell * nd
+    let up = 0
+    for (let j = 0; j < nd; j++) {
+      const plo = this.cellPhiLo![base + j]; const phi = this.cellPhiHi![base + j]
+      up += Math.max(plo * qLo[j], plo * qHi[j], phi * qLo[j], phi * qHi[j])
+    }
+    this.cellHMax![cell] = up
+    return up
+  }
+
+  /** True when the ballistic segment from (x0,y0) with min height zMin is
+   *  PROVABLY above the plate over the whole segment: zMin exceeds the
+   *  exact cell height bound over every cell intersecting the segment's
+   *  bounding box (plus a 1e-9 m rounding margin). */
+  private locallyClear(x0: number, y0: number, x1: number, y1: number, zMin: number): boolean {
+    const G = TransientSandSim.GRID; const a = this.plate.a
+    const gx0 = Math.min(G - 1, Math.max(0, Math.floor(((Math.min(x0, x1) + a) / (2 * a)) * G)))
+    const gx1 = Math.min(G - 1, Math.max(0, Math.floor(((Math.max(x0, x1) + a) / (2 * a)) * G)))
+    const gy0 = Math.min(G - 1, Math.max(0, Math.floor(((Math.min(y0, y1) + a) / (2 * a)) * G)))
+    const gy1 = Math.min(G - 1, Math.max(0, Math.floor(((Math.max(y0, y1) + a) / (2 * a)) * G)))
+    for (let gy = gy0; gy <= gy1; gy++) {
+      for (let gx = gx0; gx <= gx1; gx++) {
+        if (zMin <= this.cellHeightMax(gy * G + gx) + 1e-9) return false
+      }
+    }
+    return true
   }
 
   private cellIndex(x: number, y: number): number {
@@ -365,6 +417,7 @@ export class TransientSandSim {
     if (customDt && this.sleep.enabled) this.wakeAll()
     const dt = dtIn ?? nominalDt; const t = this.t; const tNew = t + dt
     pl.beginStep(t, tNew)
+    this.stepSeq++
     // Inelastic-collapse regularization: contacts place at h+1e-9 m; a
     // rebound apex below 1e-8 m above the surface is unresolvable and
     // sustains a numerical limit cycle; stick floor sqrt(2*g*9e-9).
@@ -450,16 +503,27 @@ export class TransientSandSim {
         const x0 = st.x[i]; const y0 = st.y[i]; const z0 = st.z[i]
         const vx0 = st.vx[i]; const vy0 = st.vy[i]; const vz0 = st.vz[i]
         const rem = tNew - cur
+        this.flySegments++
         {
           const zEnd = z0 + vz0 * rem - 0.5 * G * rem * rem
           const tv = Math.min(Math.max(vz0 / G, 0), rem)
           const zMin = Math.min(z0, zEnd, z0 + vz0 * tv - 0.5 * G * tv * tv)
           if (zMin > pl.hBound) {
+            this.globalSkips++
+            st.x[i] = x0 + vx0 * rem; st.y[i] = y0 + vy0 * rem
+            st.z[i] = zEnd; st.vz[i] = vz0 - G * rem
+            cur = tNew; break
+          }
+          // M6-5: tighter proof over the traversed cells x this segment.
+          if (this.useLocalBound()
+              && this.locallyClear(x0, y0, x0 + vx0 * rem, y0 + vy0 * rem, zMin)) {
+            this.localSkips++
             st.x[i] = x0 + vx0 * rem; st.y[i] = y0 + vy0 * rem
             st.z[i] = zEnd; st.vz[i] = vz0 - G * rem
             cur = tNew; break
           }
         }
+        this.sampledSegments++
         let firstBad = -1
         for (let k = 1; k <= CONTACT_SAMPLES; k++) {
           const tau = cur + rem * (k / CONTACT_SAMPLES); const d = tau - cur

@@ -12,6 +12,16 @@ import { ScoreStreamAudio } from '../audio/scoreWorklet'
 // Physics runs in a Worker; this component only sends controls and draws snapshots.
 const PLATE_A = 0.12
 const COUNTS = [500, 2000, 5000]
+// Dev/measurement route: ?count=N (e.g. 100000, 600000) adds a clearly
+// labelled high-load option. Normal UI choices stay as above; the actual
+// computed particle count is always shown in the stage header.
+const DEV_COUNT = (() => {
+  const q = new URLSearchParams(window.location.search).get('count')
+  if (!q) return null
+  const n = parseInt(q, 10)
+  return Number.isFinite(n) ? Math.max(100, Math.min(600000, n)) : null
+})()
+const ALL_COUNTS = DEV_COUNT && !COUNTS.includes(DEV_COUNT) ? [...COUNTS, DEV_COUNT] : COUNTS
 const GAMMAS = [80, 40, 0.8]
 const DRIVE_CENTER: [number, number] = [0, 0]
 const DRIVE_OFF: [number, number] = [0.06, 0]
@@ -40,7 +50,7 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
   const poolRef = useRef<TransientPool | null>(null)
   const [mode, setMode] = useState<'single' | 'perf'>('single')
   const [playing, setPlaying] = useState(false)
-  const [count, setCount] = useState(500)
+  const [count, setCount] = useState(DEV_COUNT ?? 500)
   const [gamma, setGamma] = useState(80)
   const [seed, setSeed] = useState(seed0)
   const [freq, setFreq] = useState(152)
@@ -226,7 +236,7 @@ export default function ParticleStage({ seed0 }: { seed0: number }) {
               if (mode === 'single') initSingle(gamma, c, seed)
               else initPerf(performanceScore(calibratedForceN(driveOff ? DRIVE_OFF : DRIVE_CENTER)), c, seed, driveOff)
             }} className="bg-[var(--void)] border border-[var(--hair)] rounded px-2 py-2 text-[var(--text)]">
-              {COUNTS.map((c) => <option key={c} value={c}>{c.toLocaleString()}粒</option>)}
+              {ALL_COUNTS.map((c) => <option key={c} value={c}>{c.toLocaleString()}粒{c === DEV_COUNT ? '（開発用・高負荷）' : ''}</option>)}
             </select>
           </label>
           {mode === 'single' && (
