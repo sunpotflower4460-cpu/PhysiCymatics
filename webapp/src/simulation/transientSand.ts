@@ -17,6 +17,7 @@ export interface TransientStats {
 }
 
 const S5 = new Float64Array(5)
+const S2 = new Float64Array(2)
 export const CONTACT_SAMPLES = 8
 export const EVENT_BISECT_ITERS = 30
 export const MAX_EVENT_ROUNDS = 8
@@ -93,6 +94,9 @@ export class TransientSandSim {
   localSliceSkips = 0
   localPieceChecks = 0
   cellBoundComputations = 0
+  // M6-7 profiling counters.
+  bisectIters = 0
+  sittingSteps = 0
   private cellHMax: Float64Array | null = null
   private cellHStamp: Int32Array | null = null
   private cellHMaxK: Float64Array | null = null
@@ -554,7 +558,7 @@ export class TransientSandSim {
           // interval) so this step is processed exactly as the baseline.
           this.setSleeping(i, 0); this.wakeCount++
           if (st.sitting[i]) {
-            pl.surfAt(st.x[i], st.y[i], t, S5); st.z[i] = S5[0]
+            st.z[i] = pl.heightAt(st.x[i], st.y[i], t)
           } else {
             this.materialize(i, t)
           }
@@ -578,7 +582,7 @@ export class TransientSandSim {
       if (!this.sleeping[i] || this.wakeT[i] !== wt || !st.alive[i]) continue // stale entry
       this.setSleeping(i, 0); this.wakeCount++
       if (st.sitting[i]) {
-        pl.surfAt(st.x[i], st.y[i], t, S5); st.z[i] = S5[0]
+        st.z[i] = pl.heightAt(st.x[i], st.y[i], t)
       } else {
         this.materialize(i, t)
       }
@@ -605,9 +609,11 @@ export class TransientSandSim {
       while (cur < tNew - 1e-15 && rounds < MAX_EVENT_ROUNDS) {
         rounds++
         if (st.sitting[i]) {
+          this.sittingSteps++
           // wtt is linear in tau at fixed (x,y): exact detach root.
-          pl.surfAt(st.x[i], st.y[i], cur, S5); const w0 = S5[4]
-          pl.surfAt(st.x[i], st.y[i], tNew, S5); const w1 = S5[4]; const h1 = S5[0]
+          // Height+accel evaluations are bitwise surfAt's h and wtt.
+          const w0 = pl.accelAt(st.x[i], st.y[i], cur)
+          pl.heightAccelAt(st.x[i], st.y[i], tNew, S2); const w1 = S2[1]; const h1 = S2[0]
           if (w0 >= -G && w1 >= -G) { st.z[i] = h1; cur = tNew; break }
           const frac = w0 < -G ? 0 : Math.min(1, Math.max(0, (-G - w0) / (w1 - w0)))
           const td = cur + frac * (tNew - cur)
@@ -670,6 +676,7 @@ export class TransientSandSim {
         let lo = cur + rem * ((firstBad - 1) / CONTACT_SAMPLES)
         let hi = cur + rem * (firstBad / CONTACT_SAMPLES)
         for (let k = 0; k < EVENT_BISECT_ITERS; k++) {
+          this.bisectIters++
           const tm = 0.5 * (lo + hi); const d = tm - cur
           if (z0 + vz0 * d - 0.5 * G * d * d <= pl.heightAt(x0 + vx0 * d, y0 + vy0 * d, tm)) hi = tm; else lo = tm
         }
@@ -729,6 +736,7 @@ export class TransientSandSim {
             const vx0 = st.vx[i]; const vy0 = st.vy[i]; const vz0 = st.vz[i]
             let lo2 = cur; let hi2 = subEnd
             for (let k = 0; k < EVENT_BISECT_ITERS; k++) {
+              this.bisectIters++
               const tm = 0.5 * (lo2 + hi2); const dd = tm - cur
               if (z0 + vz0 * dd - 0.5 * G * dd * dd <= pl.heightAt(x0 + vx0 * dd, y0 + vy0 * dd, tm)) hi2 = tm; else lo2 = tm
             }
@@ -776,8 +784,7 @@ export class TransientSandSim {
     for (let i = 0; i < st.id.length; i++) {
       if (!this.sleeping[i] || !st.alive[i]) continue
       if (st.sitting[i]) {
-        this.plate.surfAt(st.x[i], st.y[i], this.t, S5)
-        st.z[i] = S5[0]
+        st.z[i] = this.plate.heightAt(st.x[i], st.y[i], this.t)
         this.sleepT0[i] = this.t
       } else {
         this.materialize(i, this.t)

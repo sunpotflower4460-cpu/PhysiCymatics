@@ -328,6 +328,30 @@ describe('M6-6 sliced non-contact proof', () => {
     }
   })
 
+  it('heightAccelAt/accelAt are bitwise identical to surfAt h/wtt', () => {
+    const plate = new TransientPlate(singleToneScore(649, calibratedForceN(), 30))
+    let seed = 51501
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff * 2 - 1 }
+    for (let j = 0; j < plate.ndof; j++) { plate.q[j] = rnd() * 2e-4; plate.qd[j] = rnd() * 0.3 }
+    const out = new Float64Array(5); const out2 = new Float64Array(2)
+    const a = plate.a
+    const pts: [number, number][] = [[0, 0], [a, 0], [0, -a], [a, a], [1e-15, -1e-15], [0.3, 0.2], [-0.24, 0.05]]
+    for (let n = 0; n < 300; n++) pts.push([rnd() * 0.2, rnd() * 0.2])
+    for (let step = 0; step < 3; step++) {
+      plate.beginStep(step * 1.7e-4, (step + 1) * 1.7e-4)
+      for (const [x, y] of pts) {
+        for (const fr of [0, 0.17, 0.5, 0.99, 1]) {
+          const tau = step * 1.7e-4 + fr * 1.7e-4
+          plate.surfAt(x, y, tau, out)
+          plate.heightAccelAt(x, y, tau, out2)
+          expect(out2[0]).toBe(out[0])
+          expect(out2[1]).toBe(out[4])
+          expect(plate.accelAt(x, y, tau)).toBe(out[4])
+        }
+      }
+    }
+  })
+
   it('sliced proof engages where the whole-segment proof cannot', () => {
     const mk = (opts: object) => createTransientSim(
       singleToneScore(152, calibratedForceN(), 30), 200, 7, [0, 0], { enabled: true, ...opts })
