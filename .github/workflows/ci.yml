@@ -59,10 +59,12 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
       - name: golden ↔ reference parity (regenerate + check)
         run: |
-          python3 -m pip install --quiet numpy scipy
-          python3 reference/gen_golden.py
+          python -m pip install --quiet numpy scipy
+          python reference/gen_golden.py
           git diff --exit-code core/PhysicsCore/Tests/PhysicsCoreTests/Resources
       - name: swift test (PhysicsCore golden tests)
         working-directory: core/PhysicsCore
