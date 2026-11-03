@@ -64,6 +64,15 @@ export class TransientPlate {
   private tauSlotTauQH = new Float64Array(TransientPlate.TAU_SLOTS).fill(NaN)
   private tauQH!: Float64Array
   private tauQddH!: Float64Array
+  // M6-8A: DOFs live in the current segment (any Hermite endpoint
+  // nonzero). Dead DOFs have q(tau) identically zero on the segment,
+  // so their height/accel terms are exact zeros and can be skipped
+  // bitwise (finite state assumed, as everywhere in the physics).
+  // With center drive only the m=0 modes are ever live.
+  liveDofs!: Int32Array
+  liveCount = 0
+  /** A/B measurement switch (bench only): false evaluates all DOFs. */
+  liveMaskEnabled = true
 
   constructor(score: PerformanceScore, driveXY: [number, number] = [0, 0]) {
     this.signal = new ScoreSignal(score)
@@ -102,6 +111,9 @@ export class TransientPlate {
     this.tauQQ = new Float64Array(TransientPlate.TAU_SLOTS * n)
     this.tauQH = new Float64Array(TransientPlate.TAU_SLOTS * n)
     this.tauQddH = new Float64Array(TransientPlate.TAU_SLOTS * n)
+    this.liveDofs = new Int32Array(n)
+    for (let j = 0; j < n; j++) this.liveDofs[j] = j
+    this.liveCount = n
     this.segQMin = new Float64Array(n)
     this.segQMax = new Float64Array(n)
     this.setDrive(driveXY[0], driveXY[1])
@@ -302,6 +314,15 @@ export class TransientPlate {
     this.tauSlotTau.fill(NaN)
     this.tauSlotTauQ.fill(NaN)
     this.tauSlotTauQH.fill(NaN)
+    let lc = 0
+    if (this.liveMaskEnabled) {
+      for (let j = 0; j < n; j++) {
+        if (q0[j] !== 0 || qd0[j] !== 0 || q[j] !== 0 || qd[j] !== 0) this.liveDofs[lc++] = j
+      }
+    } else {
+      for (let j = 0; j < n; j++) this.liveDofs[lc++] = j
+    }
+    this.liveCount = lc
     for (let j = 0; j < n; j++) {
       const r = hermiteQRange(q0[j], qd0[j], q[j], qd[j], t1 - t0)
       // Widen by a rounding hair for bound use (M6-5R): modalCoeffs
@@ -440,7 +461,8 @@ export class TransientPlate {
     const A = 2 * s3 - 3 * s2 + 1; const B = (s3 - 2 * s2 + s) * hseg
     const C = -2 * s3 + 3 * s2; const D = (s3 - s2) * hseg
     const { q0, qd0, q1, qd1 } = seg
-    for (let j = 0; j < n; j++) {
+    for (let t = 0; t < this.liveCount; t++) {
+      const j = this.liveDofs[t]
       this.tauQQ[base + j] = A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]
     }
     return base
@@ -460,7 +482,8 @@ export class TransientPlate {
     const idx = this.spatialSetup(x, y)
     const stride = BD.ngrid
     let hh = 0
-    for (let j = 0; j < this.ndof; j++) {
+    for (let t = 0; t < this.liveCount; t++) {
+      const j = this.liveDofs[t]
       const m = this.dofM[j]
       const R = this.Rflat[this.dofMode[j] * stride + idx]
       const W = m === 0 ? R : this.dofCos[j] ? R * CM[m] : R * SM[m]
@@ -489,7 +512,8 @@ export class TransientPlate {
     const Rr = -12 * s + 6; const Ss = (6 * s - 2) * hseg
     const hh = hseg * hseg
     const { q0, qd0, q1, qd1 } = seg
-    for (let j = 0; j < n; j++) {
+    for (let t = 0; t < this.liveCount; t++) {
+      const j = this.liveDofs[t]
       this.tauQH[base + j] = A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]
       this.tauQddH[base + j] = (P * q0[j] + Q * qd0[j] + Rr * q1[j] + Ss * qd1[j]) / hh
     }
@@ -521,7 +545,8 @@ export class TransientPlate {
     const idx = this.spatialSetup(x, y)
     const stride = BD.ngrid
     let hh = 0; let wtt = 0
-    for (let j = 0; j < this.ndof; j++) {
+    for (let t = 0; t < this.liveCount; t++) {
+      const j = this.liveDofs[t]
       const m = this.dofM[j]
       const R = this.Rflat[this.dofMode[j] * stride + idx]
       const W = m === 0 ? R : this.dofCos[j] ? R * CM[m] : R * SM[m]
@@ -550,7 +575,8 @@ export class TransientPlate {
     const { q0, qd0, q1, qd1 } = seg
     const stride = BD.ngrid
     let hh = 0
-    for (let j = 0; j < this.ndof; j++) {
+    for (let t = 0; t < this.liveCount; t++) {
+      const j = this.liveDofs[t]
       const m = this.dofM[j]
       const R = this.Rflat[this.dofMode[j] * stride + idx]
       const W = m === 0 ? R : this.dofCos[j] ? R * CM[m] : R * SM[m]
@@ -567,7 +593,8 @@ export class TransientPlate {
     const idx = this.spatialSetup(x, y)
     const stride = BD.ngrid
     let wtt = 0
-    for (let j = 0; j < this.ndof; j++) {
+    for (let t = 0; t < this.liveCount; t++) {
+      const j = this.liveDofs[t]
       const m = this.dofM[j]
       const R = this.Rflat[this.dofMode[j] * stride + idx]
       const W = m === 0 ? R : this.dofCos[j] ? R * CM[m] : R * SM[m]

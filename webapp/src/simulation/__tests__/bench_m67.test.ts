@@ -50,7 +50,7 @@ benchIt('M6-7 profile + A/B', () => {
     log(`unit: surfAt=${surfNs.toFixed(0)}ns heightAt=${hNs.toFixed(0)}ns heightAtFused=${fNs.toFixed(0)}ns heightAccelAt=${haNs.toFixed(0)}ns heightAtCacheHit=${hHitNs.toFixed(0)}ns acc=${acc.toFixed(3)}`)
   }
 
-  type Mode = { name: string; opts: SleepOptions }
+  type Mode = { name: string; opts: SleepOptions; mask?: boolean }
   const MODES: Mode[] = (proc?.env.PHYSI_BENCH_MODES ?? 'base')
     .split(',')
     .map((m): Mode => {
@@ -59,6 +59,7 @@ benchIt('M6-7 profile + A/B', () => {
         case 'k1': return { name: 'k1', opts: { enabled: true, localBound: true } }
         case 'nosleep': return { name: 'nosleep', opts: { enabled: false } }
         case 'locsleep': return { name: 'locsleep', opts: { enabled: true, localSleep: true } }
+        case 'nomask': return { name: 'nomask', opts: { enabled: true }, mask: false }
         case 'base': return { name: 'base', opts: { enabled: true } }
         default: return { name: m, opts: { enabled: true, ...(JSON.parse(m) as object) } }
       }
@@ -72,8 +73,9 @@ benchIt('M6-7 profile + A/B', () => {
     wakes: sim.wakeCount, skipped: sim.skippedUpdates, bound: sim.cellBoundComputations,
     regionChecks: sim.regionChecks,
   })
-  const run = (opts: SleepOptions, n: number, force: number, dur: number, pre = 0) => {
-    const sim = createTransientSim(singleToneScore(152, force, 30), n, 7, [0, 0], opts)
+  const run = (mode: Mode, n: number, force: number, dur: number, pre = 0) => {
+    const sim = createTransientSim(singleToneScore(152, force, 30), n, 7, [0, 0], mode.opts)
+    if (mode.mask === false) sim.plate.liveMaskEnabled = false
     if (pre > 0) sim.advanceTo(pre)
     const c0 = snap(sim)
     const t0 = performance.now()
@@ -83,7 +85,7 @@ benchIt('M6-7 profile + A/B', () => {
     const d = Object.fromEntries(Object.keys(c0).map((k) => [k, (c1 as Record<string, number>)[k] - (c0 as Record<string, number>)[k]]))
     return { ms, ...d, bounceTotal: sim.nBounce, detachTotal: sim.nDetach, sleepingFrac: sim.stats().sleepingFrac, rss: Math.round((proc?.memoryUsage().rss ?? 0) / 1048576) }
   }
-  run({ enabled: true }, 300, F, 0.2) // warmup
+  run({ name: 'warmup', opts: { enabled: true } }, 300, F, 0.2) // warmup
 
   const cases: [string, string, number, number, number, number, number][] = [
     // group, label, n, force, dur, pre, repeats
@@ -100,7 +102,7 @@ benchIt('M6-7 profile + A/B', () => {
     for (const m of MODES) {
       const times: number[] = []
       let last: ReturnType<typeof run> | null = null
-      for (let r = 0; r < reps; r++) { last = run(m.opts, n, force, dur, pre); times.push(last.ms) }
+      for (let r = 0; r < reps; r++) { last = run(m, n, force, dur, pre); times.push(last.ms) }
       const med = [...times].sort((a, b) => a - b)[Math.floor(times.length / 2)]
       const L = last! as unknown as Record<string, number>
       log(`${label} mode=${m.name}: median=${Math.round(med)}ms surf=${L.surf} height=${L.height} flySeg=${L.fly} globSkip=${L.glob} locSkip=${L.loc} sampled=${L.sampled} bisect=${L.bisect} sittingSteps=${L.sittingSteps} bounce=${L.bounce} detach=${L.detach} sleepEval=${L.sleepEval} wakes=${L.wakes} skippedUpd=${L.skipped} boundComp=${L.bound} regionChecks=${L.regionChecks} bounceTot=${L.bounceTotal} sleepingFrac=${Number(L.sleepingFrac).toFixed(3)} rssMB=${L.rss}`)

@@ -353,6 +353,32 @@ describe('M6-6 sliced non-contact proof', () => {
     }
   })
 
+  it('live-DOF mask: dead DOFs are skipped bitwise (M6-8A)', () => {
+    const plate = new TransientPlate(singleToneScore(152, 0, 30))
+    // Excite only DOFs 1 and 5; all other Hermite endpoints stay zero.
+    plate.q[1] = 1.3e-4; plate.qd[1] = -0.21; plate.q[5] = -2e-5; plate.qd[5] = 0.07
+    plate.beginStep(0, 1.7e-4)
+    expect(plate.liveCount).toBe(2)
+    expect([...plate.liveDofs.subarray(0, plate.liveCount)]).toEqual([1, 5])
+    const out = new Float64Array(5); const out2 = new Float64Array(2)
+    let seed = 4242
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff * 2 - 1 }
+    for (let n = 0; n < 500; n++) {
+      const x = rnd() * 0.2; const y = rnd() * 0.2; const tau = Math.abs(rnd()) * 1.7e-4
+      plate.surfAt(x, y, tau, out)
+      expect(plate.heightAt(x, y, tau)).toBe(out[0])
+      expect(plate.heightAtFused(x, y, tau)).toBe(out[0])
+      plate.heightAccelAt(x, y, tau, out2)
+      expect(out2[0]).toBe(out[0])
+      expect(out2[1]).toBe(out[4])
+      expect(plate.accelAt(x, y, tau)).toBe(out[4])
+    }
+    // With forcing, driven m=0 DOFs join the live set in segment 1.
+    const driven = new TransientPlate(singleToneScore(152, calibratedForceN(), 30))
+    driven.beginStep(0, 1.7e-4)
+    expect(driven.liveCount).toBe(2) // exactly the two m=0 modes (center drive)
+  })
+
   it('sliced proof engages where the whole-segment proof cannot', () => {
     const mk = (opts: object) => createTransientSim(
       singleToneScore(152, calibratedForceN(), 30), 200, 7, [0, 0], { enabled: true, ...opts })
@@ -362,6 +388,51 @@ describe('M6-6 sliced non-contact proof', () => {
     expect(sliced.localSliceAttempts).toBeGreaterThan(0)
     // The sliced proof must not sample MORE segments than M6-5.
     expect(sliced.sampledSegments).toBeLessThanOrEqual(whole.sampledSegments)
+  })
+})
+
+describe('M6-8 live-DOF mask audit (drive variants)', () => {
+  const runPair = (driveXY: [number, number], mutate?: (s: ReturnType<typeof createTransientSim>) => void) => {
+    const mk = (mask: boolean) => {
+      const sim = createTransientSim(singleToneScore(152, calibratedForceN(), 30), 40, 7, driveXY, { enabled: true })
+      sim.plate.liveMaskEnabled = mask
+      return sim
+    }
+    const on = mk(true); const off = mk(false)
+    on.advanceTo(0.2); off.advanceTo(0.2)
+    if (mutate) { mutate(on); mutate(off) }
+    on.advanceTo(0.45); off.advanceTo(0.45)
+    return { on, off }
+  }
+  const assertBitwise = (on: ReturnType<typeof createTransientSim>, off: ReturnType<typeof createTransientSim>) => {
+    expect(on.nBounce).toBe(off.nBounce)
+    expect(on.nDetach).toBe(off.nDetach)
+    expect([...on.state.alive]).toEqual([...off.state.alive])
+    expect([...on.state.sitting]).toEqual([...off.state.sitting])
+    expect(maxPosDiff(on, off)).toBe(0)
+    for (let i = 0; i < on.state.id.length; i++) {
+      expect(on.state.z[i]).toBe(off.state.z[i])
+      expect(on.state.vx[i]).toBe(off.state.vx[i])
+      expect(on.state.vz[i]).toBe(off.state.vz[i])
+    }
+  }
+
+  it('off-center drive: mask on/off bitwise identical', () => {
+    const { on, off } = runPair([0.04, -0.03])
+    // Off-center drive excites more than the two m=0 modes.
+    expect(on.plate.liveCount).toBeGreaterThan(2)
+    assertBitwise(on, off)
+  })
+
+  it('drive point change mid-run: mask on/off bitwise identical', () => {
+    const { on, off } = runPair([0, 0], (s) => { s.wakeAll(); s.plate.setDrive(0.05, 0.02) })
+    expect(on.plate.liveCount).toBeGreaterThan(2)
+    assertBitwise(on, off)
+  })
+
+  it('frequency change with residual vibration: mask on/off bitwise identical', () => {
+    const { on, off } = runPair([0.03, 0], (s) => { s.wakeAll(); s.plate.setFrequency(649, s.t) })
+    assertBitwise(on, off)
   })
 })
 
