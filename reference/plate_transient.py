@@ -134,6 +134,11 @@ class TransientPlate:
         self._mode_m = np.array([md["m"] for md in self.modes])
         self.set_drive(*drive_xy)
         self._seg = None  # (t0, t1, q0, qd0, qdd0, q1, qd1, qdd1)
+        # M6-11 research switch (mirrors TS TransientPlate.accelMode):
+        # "ode" evaluates qdd from the equation of motion applied to the
+        # Hermite q/qd instead of the Hermite second derivative.
+        # Default "hermite" is the production/reference model.
+        self.accel_mode = "hermite"
 
     def set_drive(self, x, y):
         self.drive_xy = (float(x), float(y))
@@ -185,6 +190,8 @@ class TransientPlate:
               + (-6*s2 + 6*s)*q1 + (3*s2 - 2*s)*h*qd1)/h
         qdd = ((12*s - 6)*q0 + (6*s - 4)*h*qd0
                + (-12*s + 6)*q1 + (6*s - 2)*h*qd1)/(h*h)
+        if self.accel_mode == "ode":
+            qdd = self._accel(q, qd, tau)
         return q, qd, qdd
 
     def surf_at(self, x, y, tau):
@@ -241,7 +248,10 @@ class TransientPlate:
             if np.ndim(s) == 0:
                 q = c_q0*q0 + c_qd0*qd0 + c_q1*q1 + c_qd1*qd1
                 qd = d_q0*q0 + d_qd0*qd0 + d_q1*q1 + d_qd1*qd1
-                qdd = a_q0*q0 + a_qd0*qd0 + a_q1*q1 + a_qd1*qd1
+                if self.accel_mode == "ode":
+                    qdd = self._accel(q, qd, float(tau))
+                else:
+                    qdd = a_q0*q0 + a_qd0*qd0 + a_q1*q1 + a_qd1*qd1
                 out[0][sl] = q @ Phi; out[1][sl] = q @ Phix; out[2][sl] = q @ Phiy
                 out[3][sl] = qd @ Phi; out[4][sl] = qdd @ Phi
             else:
@@ -254,7 +264,14 @@ class TransientPlate:
                 aq1 = (-12*ss + 6)/(hseg*hseg); aqd1 = (6*ss - 2)/hseg
                 q = cq0*q0[:, None] + cqd0*qd0[:, None] + cq1*q1[:, None] + cqd1*qd1[:, None]
                 qd = dq0*q0[:, None] + dqd0*qd0[:, None] + dq1*q1[:, None] + dqd1*qd1[:, None]
-                qdd = aq0*q0[:, None] + aqd0*qd0[:, None] + aq1*q1[:, None] + aqd1*qd1[:, None]
+                if self.accel_mode == "ode":
+                    taus = t0 + ss*hseg
+                    Farr = np.array([self.score.force_peak_at(float(tt))*self.score.u(float(tt))
+                                     for tt in np.atleast_1d(taus)])
+                    qdd = (self.phi_drive[:, None]*Farr[None, :]/self.mass[:, None]
+                           - 2*self.zeta*self.omega[:, None]*qd - self.omega[:, None]**2*q)
+                else:
+                    qdd = aq0*q0[:, None] + aqd0*qd0[:, None] + aq1*q1[:, None] + aqd1*qd1[:, None]
                 out[0][sl] = np.einsum("jn,jn->n", q, Phi)
                 out[1][sl] = np.einsum("jn,jn->n", q, Phix)
                 out[2][sl] = np.einsum("jn,jn->n", q, Phiy)
@@ -285,8 +302,7 @@ class TransientPlate:
                 q1, qd1 = self._rk4(q1, qd1, tt, hsub); tt += hsub
             h = dt
             # q range: endpoints + critical points of the cubic.
-            qmin = np.minimum(qmin, np.minimum(q, q1))
-            qmax = np.maximum(qmax, np.maximum(q, q1))
+            sqmin = np.minimum(q, q1); sqmax = np.maximum(q, q1)
             A = 6*(q - q1) + 3*h*(qd + qd1)
             B = -6*q + 6*q1 + h*(-4*qd - 2*qd1)
             C = h*qd
@@ -298,12 +314,35 @@ class TransientPlate:
                     s2, s3 = s*s, s*s*s
                     qv = ((2*s3 - 3*s2 + 1)*q + (s3 - 2*s2 + s)*h*qd
                           + (-2*s3 + 3*s2)*q1 + (s3 - s2)*h*qd1)
-                    qmin = np.where(valid, np.minimum(qmin, qv), qmin)
-                    qmax = np.where(valid, np.maximum(qmax, qv), qmax)
-            a0 = (-6*q - 4*h*qd + 6*q1 - 2*h*qd1)/(h*h)
-            a1 = (6*q + 2*h*qd - 6*q1 + 4*h*qd1)/(h*h)
-            amin = np.minimum(amin, np.minimum(a0, a1))
-            amax = np.maximum(amax, np.maximum(a0, a1))
+                    sqmin = np.where(valid, np.minimum(sqmin, qv), sqmin)
+                    sqmax = np.where(valid, np.maximum(sqmax, qv), sqmax)
+            qmin = np.minimum(qmin, sqmin); qmax = np.maximum(qmax, sqmax)
+            if self.accel_mode == "ode":
+                # Interval evaluation of the ODE right hand side over the
+                # exact Hermite q/qd ranges (mirrors TS lookaheadRanges).
+                qdmin = np.minimum(qd, qd1); qdmax = np.maximum(qd, qd1)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    sv = -B/np.where(A != 0, 2*A, 1.0)
+                    valid = (A != 0) & (sv > 0) & (sv < 1)
+                    vv = (A*sv*sv + B*sv + C)/h
+                    qdmin = np.where(valid, np.minimum(qdmin, vv), qdmin)
+                    qdmax = np.where(valid, np.maximum(qdmax, vv), qdmax)
+                fpk = 0.0
+                for e in self.score.events:
+                    if e["start_s"] <= t + dt and e["end_s"] >= t:
+                        fpk = max(fpk, abs(e["forcePeak_N"]))
+                d_abs = np.abs(self.phi_drive/self.mass)*fpk
+                w = self.omega
+                lo = -d_abs - 2*self.zeta*w*qdmax - w*w*sqmax
+                hi = d_abs - 2*self.zeta*w*qdmin - w*w*sqmin
+                wd = 1e-9*(1.0 + np.abs(lo) + np.abs(hi))
+                amin = np.minimum(amin, lo - wd)
+                amax = np.maximum(amax, hi + wd)
+            else:
+                a0 = (-6*q - 4*h*qd + 6*q1 - 2*h*qd1)/(h*h)
+                a1 = (6*q + 2*h*qd - 6*q1 + 4*h*qd1)/(h*h)
+                amin = np.minimum(amin, np.minimum(a0, a1))
+                amax = np.maximum(amax, np.maximum(a0, a1))
             q, qd, t = q1, qd1, t + dt
         return dict(end=end, qmin=qmin, qmax=qmax, amin=amin, amax=amax)
 
@@ -576,6 +615,49 @@ class TransientSandSim:
                     di = si[det]; sitting[di] = False
                     vz[di] = uz[det]; z[di] = hs[det] + 1e-9
                     cur[si] = t_new
+                elif pl.accel_mode == "ode":
+                    # M6-11 research: ODE wtt is not linear in time, so the
+                    # exact root below does not apply. Vectorized scan +
+                    # bisection (mirrors TS detachTimeOde, K=8); root pairs
+                    # inside one scan subinterval can be missed.
+                    _,_,_,_, w0 = pl.surf_at(x[si], y[si], cur[si])
+                    hs1,_,_,_, _w1 = pl.surf_at(x[si], y[si], np.full(si.size, t_new))
+                    td = np.full(si.size, np.nan)
+                    det_now = w0 < -G
+                    td[det_now] = cur[si][det_now]
+                    open_m = ~det_now
+                    t_prev = cur[si].copy()
+                    for k in range(1, 9):
+                        if not open_m.any():
+                            break
+                        tk = cur[si] + (t_new - cur[si])*(k/8.0)
+                        oi = np.where(open_m)[0]
+                        _,_,_,_, wk = pl.surf_at(x[si][oi], y[si][oi], tk[oi])
+                        hit_local = wk < -G
+                        if hit_local.any():
+                            hj = oi[hit_local]
+                            lo = t_prev[hj].copy(); hi = tk[hj].copy()
+                            for _ in range(40):
+                                mid = 0.5*(lo + hi)
+                                _,_,_,_, wm = pl.surf_at(x[si][hj], y[si][hj], mid)
+                                ge = wm >= -G
+                                lo = np.where(ge, mid, lo); hi = np.where(ge, hi, mid)
+                            td[hj] = 0.5*(lo + hi)
+                            open_m[hj] = False
+                        t_prev = tk
+                    stay = np.isnan(td)
+                    if stay.any():
+                        sj = si[stay]; z[sj] = hs1[stay]; cur[sj] = t_new
+                    det = ~stay
+                    if det.any():
+                        dj = si[det]
+                        hd,_,_, uzd, _ = pl.surf_at(x[dj], y[dj], td[det])
+                        sitting[dj] = False
+                        z[dj] = hd + 1e-9; vz[dj] = uzd
+                        cur[dj] = td[det]
+                        self.n_detach += int(dj.size)
+                        if dj.size:
+                            self.last_detach_t = float(td[det][0])
                 else:
                     _,_,_,_, w0 = pl.surf_at(x[si], y[si], cur[si])
                     hs1,_,_,_, w1 = pl.surf_at(x[si], y[si], np.full(si.size, t_new))

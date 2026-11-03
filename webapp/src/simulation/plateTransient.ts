@@ -73,6 +73,12 @@ export class TransientPlate {
   liveCount = 0
   /** A/B measurement switch (bench only): false evaluates all DOFs. */
   liveMaskEnabled = true
+  /** M6-11 research switch: 'ode' evaluates modal acceleration from the
+   *  equation of motion applied to the Hermite q/qd, instead of the
+   *  Hermite second derivative. Only wtt changes (h/uz stay bitwise the
+   *  Hermite values); results are NOT bitwise vs the default. Default
+   *  'hermite' is the production model. See docs/m6_11_results.md. */
+  accelMode: 'hermite' | 'ode' = 'hermite'
 
   constructor(score: PerformanceScore, driveXY: [number, number] = [0, 0]) {
     this.signal = new ScoreSignal(score)
@@ -396,6 +402,19 @@ export class TransientPlate {
     const Rr = -12 * s + 6; const Ss = (6 * s - 2) * hseg
     const hh = hseg * hseg
     const { q0, qd0, q1, qd1 } = seg
+    if (this.accelMode === 'ode') {
+      const ts = tau - this.epoch
+      const Fd = this.signal.forcePeakAt(ts) * this.signal.u(ts)
+      for (let j = 0; j < n; j++) {
+        const qv = A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]
+        const qdv = (E * q0[j] + F * qd0[j] + Gc * q1[j] + H * qd1[j]) / hseg
+        this.tauQ[base + j] = qv
+        this.tauQd[base + j] = qdv
+        this.tauQdd[base + j] = (this.phiDrive[j] * Fd) / this.mass[j]
+          - 2 * this.zeta * this.omega[j] * qdv - this.omega[j] ** 2 * qv
+      }
+      return base
+    }
     for (let j = 0; j < n; j++) {
       this.tauQ[base + j] = A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]
       this.tauQd[base + j] = (E * q0[j] + F * qd0[j] + Gc * q1[j] + H * qd1[j]) / hseg
@@ -512,6 +531,21 @@ export class TransientPlate {
     const Rr = -12 * s + 6; const Ss = (6 * s - 2) * hseg
     const hh = hseg * hseg
     const { q0, qd0, q1, qd1 } = seg
+    if (this.accelMode === 'ode') {
+      const E = 6 * s2 - 6 * s; const F = (3 * s2 - 4 * s + 1) * hseg
+      const Gc = -6 * s2 + 6 * s; const H = (3 * s2 - 2 * s) * hseg
+      const ts = tau - this.epoch
+      const Fd = this.signal.forcePeakAt(ts) * this.signal.u(ts)
+      for (let t = 0; t < this.liveCount; t++) {
+        const j = this.liveDofs[t]
+        const qv = A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]
+        const qdv = (E * q0[j] + F * qd0[j] + Gc * q1[j] + H * qd1[j]) / hseg
+        this.tauQH[base + j] = qv
+        this.tauQddH[base + j] = (this.phiDrive[j] * Fd) / this.mass[j]
+          - 2 * this.zeta * this.omega[j] * qdv - this.omega[j] ** 2 * qv
+      }
+      return base
+    }
     for (let t = 0; t < this.liveCount; t++) {
       const j = this.liveDofs[t]
       this.tauQH[base + j] = A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]
@@ -668,10 +702,15 @@ export class TransientPlate {
   }
 
   /**
-   * Exact per-DOF ranges of the Hermite q and qdd over a future window,
-   * obtained by advancing a clone with the same dt sequence (dtAt) and the
-   * same RK4 substeps the real advance will use. qdd is linear per segment
-   * (endpoints suffice); q is cubic (endpoints + critical points).
+   * Exact per-DOF ranges of the Hermite q and implemented qdd over a
+   * future window, obtained by advancing a clone with the same dt
+   * sequence (dtAt) and the same RK4 substeps the real advance will
+   * use. Hermite qdd is linear per segment (endpoints suffice); q is
+   * cubic (endpoints + critical points). In 'ode' accel mode the
+   * qdd range is instead the interval evaluation of the ODE right
+   * hand side over the exact Hermite q/qd ranges and the segment's
+   * drive-force bound |F| <= max overlapping forcePeak (envelope and
+   * sine are both within [-1, 1]); widened by a rounding hair.
    * Valid only while real steps follow dtAt exactly (no shortened steps).
    */
   lookaheadRanges(fromT: number, windowS: number, dtAt: (t: number) => number) {
@@ -685,13 +724,31 @@ export class TransientPlate {
       const dt = Math.min(dtAt(t), end - t)
       const [q1, qd1] = this.advanceState(q, qd, t, t + dt)
       const h = dt
+      let fpk = 0
+      if (this.accelMode === 'ode') {
+        const ts0 = t - this.epoch; const ts1 = t + dt - this.epoch
+        for (const e of this.signal.score.events) {
+          if (e.start_s <= ts1 && e.end_s >= ts0) fpk = Math.max(fpk, Math.abs(e.forcePeak_N))
+        }
+      }
       for (let j = 0; j < n; j++) {
         const r = hermiteQRange(q[j], qd[j], q1[j], qd1[j], h)
         if (r[0] < qMin[j]) qMin[j] = r[0]
         if (r[1] > qMax[j]) qMax[j] = r[1]
-        const a0 = (-6 * q[j] - 4 * h * qd[j] + 6 * q1[j] - 2 * h * qd1[j]) / (h * h)
-        const a1 = (6 * q[j] + 2 * h * qd[j] - 6 * q1[j] + 4 * h * qd1[j]) / (h * h)
-        const lo = Math.min(a0, a1); const hi = Math.max(a0, a1)
+        let lo: number; let hi: number
+        if (this.accelMode === 'ode') {
+          const rd = hermiteQdRange(q[j], qd[j], q1[j], qd1[j], h)
+          const w = this.omega[j]
+          const dAbs = Math.abs(this.phiDrive[j] / this.mass[j]) * fpk
+          lo = -dAbs - 2 * this.zeta * w * rd[1] - w * w * r[1]
+          hi = dAbs - 2 * this.zeta * w * rd[0] - w * w * r[0]
+          const wd = 1e-9 * (1 + Math.abs(lo) + Math.abs(hi))
+          lo -= wd; hi += wd
+        } else {
+          const a0 = (-6 * q[j] - 4 * h * qd[j] + 6 * q1[j] - 2 * h * qd1[j]) / (h * h)
+          const a1 = (6 * q[j] + 2 * h * qd[j] - 6 * q1[j] + 4 * h * qd1[j]) / (h * h)
+          lo = Math.min(a0, a1); hi = Math.max(a0, a1)
+        }
         if (lo < aMin[j]) aMin[j] = lo
         if (hi > aMax[j]) aMax[j] = hi
       }
@@ -729,6 +786,24 @@ export function hermiteQRange(q0: number, qd0: number, q1: number, qd1: number, 
   for (const s of roots) {
     if (s > 0 && s < 1) {
       const v = qAt(s)
+      if (v < lo) lo = v
+      if (v > hi) hi = v
+    }
+  }
+  return [lo, hi]
+}
+
+/** Exact [min, max] of the Hermite velocity qd(s) = (A s^2 + B s + C)/h,
+ *  s in [0,1] (same A, B, C as hermiteQRange's qd numerator). */
+export function hermiteQdRange(q0: number, qd0: number, q1: number, qd1: number, h: number): [number, number] {
+  const A = 6 * (q0 - q1) + 3 * h * (qd0 + qd1)
+  const B = -6 * q0 + 6 * q1 + h * (-4 * qd0 - 2 * qd1)
+  const C = h * qd0
+  let lo = Math.min(qd0, qd1); let hi = Math.max(qd0, qd1)
+  if (Math.abs(A) > 0) {
+    const sv = -B / (2 * A)
+    if (sv > 0 && sv < 1) {
+      const v = (A * sv * sv + B * sv + C) / h
       if (v < lo) lo = v
       if (v > hi) hi = v
     }

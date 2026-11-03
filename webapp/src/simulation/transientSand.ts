@@ -708,6 +708,33 @@ export class TransientSandSim {
     }
   }
 
+  /** First time in [cur, tNew] where the implemented (ODE-mode) wtt at
+   *  the seated particle's fixed (x, y) crosses below -G, by scan +
+   *  bisection on accelAt; null if no sign change is sampled. Root
+   *  pairs that open and close inside one scan subinterval are missed
+   *  by construction (documented limit, measured in study_m611). */
+  private detachTimeOde(i: number, cur: number, tNew: number): number | null {
+    const pl = this.plate; const st = this.state
+    const K = 8
+    let tp = cur
+    let wp = pl.accelAt(st.x[i], st.y[i], cur) + G
+    if (wp < 0) return cur
+    for (let k = 1; k <= K; k++) {
+      const t = cur + ((tNew - cur) * k) / K
+      const w = pl.accelAt(st.x[i], st.y[i], t) + G
+      if (w < 0) {
+        let lo = tp; let hi = t
+        for (let it = 0; it < 40; it++) {
+          const m = 0.5 * (lo + hi)
+          if (pl.accelAt(st.x[i], st.y[i], m) + G >= 0) lo = m; else hi = m
+        }
+        return 0.5 * (lo + hi)
+      }
+      tp = t; wp = w
+    }
+    return null
+  }
+
   /** Advance one awake particle from t to tNew (events, fallback, sleep
    *  evaluation). Shared verbatim by the legacy scan and the scheduler. */
   private advanceParticle(i: number, t: number, tNew: number, dt: number, vStick: number, customDt: boolean): void {
@@ -718,6 +745,22 @@ export class TransientSandSim {
         rounds++
         if (st.sitting[i]) {
           this.sittingSteps++
+          if (pl.accelMode === 'ode') {
+            // M6-11 research: ODE wtt is not linear in tau, so the exact
+            // root below does not apply. Scan + bisect instead (root
+            // pairs inside one scan subinterval can be missed — the
+            // same class of limit as contact sampling; measured miss
+            // rate in study_m611, not a proof).
+            const tdOde = this.detachTimeOde(i, cur, tNew)
+            if (tdOde === null) {
+              pl.heightAccelAt(st.x[i], st.y[i], tNew, S2)
+              st.z[i] = S2[0]; cur = tNew; break
+            }
+            pl.surfAt(st.x[i], st.y[i], tdOde, S5)
+            st.sitting[i] = 0; st.z[i] = S5[0] + 1e-9; st.vz[i] = S5[3]
+            cur = tdOde; this.nDetach++; this.lastDetachT = tdOde
+            continue
+          }
           // wtt is linear in tau at fixed (x,y): exact detach root.
           // Height+accel evaluations are bitwise surfAt's h and wtt.
           const w0 = pl.accelAt(st.x[i], st.y[i], cur)
