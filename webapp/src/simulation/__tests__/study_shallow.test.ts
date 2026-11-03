@@ -5,7 +5,7 @@
 // contacts the production sampling can miss between samples.
 import { it } from 'vitest'
 import { singleToneScore } from '../sequence'
-import { TransientSandSim, calibratedForceN } from '../transientSand'
+import { TransientSandSim, createTransientSim, calibratedForceN } from '../transientSand'
 import { TransientPlate } from '../plateTransient'
 import { initialState } from '../sand'
 import { DEFAULT_PARAMS } from '../types'
@@ -25,6 +25,18 @@ benchIt('shallow contact convergence (spp scaling)', () => {
       const sim = mk(freq, spp)
       sim.advanceTo(0.15)
       console.log(`freq=${freq} spp=${spp}: bounce=${sim.nBounce} detach=${sim.nDetach} alive=${sim.nAlive} eventCap=${sim.nEventCap}`)
+    }
+  }
+}, 1800000)
+
+benchIt('in-sim sample count sensitivity (8 vs 32 samples)', () => {
+  const F2 = calibratedForceN()
+  for (const freq of [649, 1241.6]) {
+    for (const samples of [8, 32]) {
+      const sim = createTransientSim(singleToneScore(freq, F2, 30), 60, 7, [0, 0], { enabled: false })
+      sim.contactSamples = samples
+      sim.advanceTo(0.15)
+      console.log(`samples freq=${freq} n=${samples}: bounce=${sim.nBounce} detach=${sim.nDetach} alive=${sim.nAlive}`)
     }
   }
 }, 1800000)
