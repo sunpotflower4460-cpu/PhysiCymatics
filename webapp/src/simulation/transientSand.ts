@@ -103,6 +103,10 @@ export class TransientSandSim {
   bisectIters = 0
   sittingSteps = 0
   localSleepWins = 0
+  /** Research override for the contact sample count (M6-9 study).
+   *  Production value is CONTACT_SAMPLES; raising it changes results
+   *  (finer detection) and must stay a research-only switch. */
+  contactSamples: number = CONTACT_SAMPLES
   private cellHMax: Float64Array | null = null
   private cellHStamp: Int32Array | null = null
   private cellHMaxK: Float64Array | null = null
@@ -766,8 +770,8 @@ export class TransientSandSim {
         }
         this.sampledSegments++
         let firstBad = -1
-        for (let k = 1; k <= CONTACT_SAMPLES; k++) {
-          const tau = cur + rem * (k / CONTACT_SAMPLES); const d = tau - cur
+        for (let k = 1; k <= this.contactSamples; k++) {
+          const tau = cur + rem * (k / this.contactSamples); const d = tau - cur
           // Height-only evaluation (bitwise identical to surfAt's h).
           if (z0 + vz0 * d - 0.5 * G * d * d - pl.heightAt(x0 + vx0 * d, y0 + vy0 * d, tau) <= 0) { firstBad = k; break }
         }
@@ -777,8 +781,8 @@ export class TransientSandSim {
           st.z[i] = z0 + vz0 * d - 0.5 * G * d * d; st.vz[i] = vz0 - G * d
           cur = tNew; break
         }
-        let lo = cur + rem * ((firstBad - 1) / CONTACT_SAMPLES)
-        let hi = cur + rem * (firstBad / CONTACT_SAMPLES)
+        let lo = cur + rem * ((firstBad - 1) / this.contactSamples)
+        let hi = cur + rem * (firstBad / this.contactSamples)
         for (let k = 0; k < EVENT_BISECT_ITERS; k++) {
           this.bisectIters++
           const tm = 0.5 * (lo + hi); const d = tm - cur
