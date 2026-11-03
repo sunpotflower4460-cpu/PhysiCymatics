@@ -14,34 +14,72 @@ import { DEFAULT_PARAMS } from '../types'
 const proc = (globalThis as { process?: { env: Record<string, string | undefined> } }).process
 const benchIt = proc?.env.PHYSI_BENCH ? it : it.skip
 
-benchIt('M6-9R D1 first divergence spp44 vs spp176', () => {
+benchIt('M6-9R D1 first divergence spp44 vs spp176 + chaos control', () => {
   const F = calibratedForceN()
   const N = 60
+  const cmp = (a: TransientSandSim, b: TransientSandSim) => {
+    let stateDiv = false; let maxD = 0
+    for (let i = 0; i < N; i++) {
+      if (a.state.sitting[i] !== b.state.sitting[i] || a.state.alive[i] !== b.state.alive[i]) stateDiv = true
+      maxD = Math.max(maxD, Math.abs(a.state.x[i] - b.state.x[i]), Math.abs(a.state.y[i] - b.state.y[i]), Math.abs(a.state.z[i] - b.state.z[i]))
+    }
+    return { stateDiv, maxD }
+  }
   for (const freq of [649, 1241.6]) {
-    const mk = (spp: number) => {
+    const mk = (spp: number, dz = 0) => {
       const plate = new TransientPlate(singleToneScore(freq, F, 30))
       const st = initialState(plate.a, N, 12345)
+      if (dz) for (let i = 0; i < N; i++) st.z[i] += dz
       return new TransientSandSim(plate, st, { ...DEFAULT_PARAMS, spp }, { enabled: true })
     }
-    const a = mk(44); const b = mk(176)
-    const dT = 1e-4
-    let firstStateDiv = -1; let firstPosDiv = -1; let maxPosAtDiv = 0
-    const T = 0.15
+    // Three pairs advanced in 2ms locked increments:
+    //  P44: spp44 vs spp176 (surface representation differs)
+    //  P88: spp88 vs spp176 (smaller surface difference)
+    //  PCH: spp176 vs spp176 with all z perturbed by +6e-7 m
+    //       (chaos control: same-size perturbation, identical plate)
+    const pairs: [string, TransientSandSim, TransientSandSim][] = [
+      ['44v176', mk(44), mk(176)],
+      ['88v176', mk(88), mk(176)],
+      ['chaos176', mk(176), mk(176, 6e-7)],
+    ]
+    // Stage 1: 6ms locked increments (incremental advanceTo has a
+    // per-call overhead of ~3-5x, measured separately, so keep calls few).
+    const dT = 6e-3; const T = 0.12
+    const firstPos: Record<string, number> = {}; const firstState: Record<string, number> = {}
     for (let k = 1; k <= Math.round(T / dT); k++) {
       const t = k * dT
-      a.advanceTo(t); b.advanceTo(t)
-      let stateDiv = false; let maxD = 0
-      for (let i = 0; i < N; i++) {
-        if (a.state.sitting[i] !== b.state.sitting[i] || a.state.alive[i] !== b.state.alive[i]) stateDiv = true
-        maxD = Math.max(maxD, Math.abs(a.state.x[i] - b.state.x[i]), Math.abs(a.state.y[i] - b.state.y[i]), Math.abs(a.state.z[i] - b.state.z[i]))
+      for (const [name, a, b] of pairs) {
+        a.advanceTo(t); b.advanceTo(t)
+        const { stateDiv, maxD } = cmp(a, b)
+        if (!(name in firstPos) && maxD > 1e-6) firstPos[name] = t
+        if (!(name in firstState) && stateDiv) firstState[name] = t
+        if (k % 5 === 0) console.log(`D1 f=${freq} ${name} t=${t.toFixed(3)} maxPosDiff=${maxD.toExponential(2)} bounce=${a.nBounce}/${b.nBounce} detach=${a.nDetach}/${b.nDetach}`)
       }
-      if (firstPosDiv < 0 && maxD > 1e-6) { firstPosDiv = t; maxPosAtDiv = maxD }
-      if (firstStateDiv < 0 && stateDiv) firstStateDiv = t
-      if (k % 250 === 0) console.log(`D1 f=${freq} t=${t.toFixed(3)} maxPosDiff=${maxD.toExponential(2)} bounces 44=${a.nBounce} 176=${b.nBounce} detaches 44=${a.nDetach} 176=${b.nDetach}`)
     }
-    console.log(`D1 f=${freq}: first |dpos|>1um at t=${firstPosDiv}s (maxD=${maxPosAtDiv.toExponential(2)}), first sitting/alive divergence at t=${firstStateDiv}s; final bounces 44=${a.nBounce} 176=${b.nBounce}, detaches 44=${a.nDetach} 176=${b.nDetach}`)
+    for (const [name, a, b] of pairs) {
+      console.log(`D1 f=${freq} ${name}: first|dpos|>1um window<=${firstPos[name] ?? -1}s firstStateDiv window<=${firstState[name] ?? -1}s final bounce=${a.nBounce}/${b.nBounce} detach=${a.nDetach}/${b.nDetach} caps=${a.nEventCap}/${b.nEventCap}`)
+    }
+    // Stage 2: refine onset (state divergence) to +-0.5ms with fresh
+    // pairs: one single advanceTo to the window start, then fine steps.
+    const specs: Record<string, [number, number, number, number]> = {
+      '44v176': [44, 0, 176, 0], '88v176': [88, 0, 176, 0], 'chaos176': [176, 0, 176, 6e-7],
+    }
+    for (const name of Object.keys(specs)) {
+      const wEnd = firstState[name]
+      if (wEnd === undefined) { console.log(`D1-refine f=${freq} ${name}: no state divergence up to ${T}s`); continue }
+      const wStart = Math.max(0, wEnd - dT)
+      const [s1, z1, s2, z2] = specs[name]
+      const a = mk(s1, z1); const b = mk(s2, z2)
+      a.advanceTo(wStart); b.advanceTo(wStart)
+      let onset = -1
+      for (let t = wStart + 5e-4; t <= wEnd + 1e-9; t += 5e-4) {
+        a.advanceTo(t); b.advanceTo(t)
+        if (cmp(a, b).stateDiv) { onset = t; break }
+      }
+      console.log(`D1-refine f=${freq} ${name}: state divergence onset t~${onset.toFixed(4)}s (window ${wStart.toFixed(3)}-${wEnd.toFixed(3)}) bounceAtOnset=${a.nBounce}/${b.nBounce} detachAtOnset=${a.nDetach}/${b.nDetach}`)
+    }
   }
-}, 600000)
+}, 900000)
 
 benchIt('M6-9R D2 radial bin + gradient consistency audit', () => {
   const plate = new TransientPlate(singleToneScore(649, calibratedForceN(), 30))
