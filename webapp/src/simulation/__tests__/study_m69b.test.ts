@@ -1,5 +1,9 @@
-// M6-9 follow-up studies (aligned sampling). Skipped unless PHYSI_BENCH=1.
-//  A2: Hermite segment error at exactly common sample times
+// M6-9 follow-up studies. Skipped unless PHYSI_BENCH=1.
+//  WARNING (M6-9R): A2 below is FLAWED — it samples at
+//  tEnd - 0.37*dt_spp, i.e. different absolute times per spp (up to
+//  ~48us apart at 152Hz). Its ~140um figure is a time-offset artifact.
+//  Corrected version: study_m69c.test.ts (A3, shared absolute times).
+//  A2: Hermite segment error (flawed sampling, kept for the record)
 //  B2: 8-sample detection vs dense reference, resonant large amplitude
 //  C2: first-bounce time on a pre-excited plate vs spp
 import { it } from 'vitest'
