@@ -391,6 +391,51 @@ describe('M6-6 sliced non-contact proof', () => {
   })
 })
 
+describe('M6-8 live-DOF mask audit (drive variants)', () => {
+  const runPair = (driveXY: [number, number], mutate?: (s: ReturnType<typeof createTransientSim>) => void) => {
+    const mk = (mask: boolean) => {
+      const sim = createTransientSim(singleToneScore(152, calibratedForceN(), 30), 40, 7, driveXY, { enabled: true })
+      sim.plate.liveMaskEnabled = mask
+      return sim
+    }
+    const on = mk(true); const off = mk(false)
+    on.advanceTo(0.2); off.advanceTo(0.2)
+    if (mutate) { mutate(on); mutate(off) }
+    on.advanceTo(0.45); off.advanceTo(0.45)
+    return { on, off }
+  }
+  const assertBitwise = (on: ReturnType<typeof createTransientSim>, off: ReturnType<typeof createTransientSim>) => {
+    expect(on.nBounce).toBe(off.nBounce)
+    expect(on.nDetach).toBe(off.nDetach)
+    expect([...on.state.alive]).toEqual([...off.state.alive])
+    expect([...on.state.sitting]).toEqual([...off.state.sitting])
+    expect(maxPosDiff(on, off)).toBe(0)
+    for (let i = 0; i < on.state.id.length; i++) {
+      expect(on.state.z[i]).toBe(off.state.z[i])
+      expect(on.state.vx[i]).toBe(off.state.vx[i])
+      expect(on.state.vz[i]).toBe(off.state.vz[i])
+    }
+  }
+
+  it('off-center drive: mask on/off bitwise identical', () => {
+    const { on, off } = runPair([0.04, -0.03])
+    // Off-center drive excites more than the two m=0 modes.
+    expect(on.plate.liveCount).toBeGreaterThan(2)
+    assertBitwise(on, off)
+  })
+
+  it('drive point change mid-run: mask on/off bitwise identical', () => {
+    const { on, off } = runPair([0, 0], (s) => { s.wakeAll(); s.plate.setDrive(0.05, 0.02) })
+    expect(on.plate.liveCount).toBeGreaterThan(2)
+    assertBitwise(on, off)
+  })
+
+  it('frequency change with residual vibration: mask on/off bitwise identical', () => {
+    const { on, off } = runPair([0.03, 0], (s) => { s.wakeAll(); s.plate.setFrequency(649, s.t) })
+    assertBitwise(on, off)
+  })
+})
+
 describe('M6-7B localized flying sleep', () => {
   it('window cell bound contains actual surfAt heights over the window', () => {
     const sim = createTransientSim(singleToneScore(649, calibratedForceN(), 30), 10, 7, [0, 0],
