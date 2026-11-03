@@ -155,6 +155,14 @@ describe('M6-11 ode accel mode (Codex review regressions)', () => {
     const wA = plate.accelAt(0.02, 0.01, 1.5e-6)
     expect(Math.abs(out[4])).toBeGreaterThan(1)
     expect(wA).toBe(out[4])
+    // Same when the mode is switched only after beginStep: the setter
+    // must rebuild the current segment's live mask, not just caches.
+    const plate2 = new TransientPlate(score, [0, 0])
+    plate2.beginStep(0, dt)
+    plate2.accelMode = 'ode'
+    plate2.surfAt(0.02, 0.01, 1.5e-6, out)
+    expect(Math.abs(out[4])).toBeGreaterThan(1)
+    expect(plate2.accelAt(0.02, 0.01, 1.5e-6)).toBe(out[4])
   })
 
   it('switching accelMode mid-segment invalidates cached coefficients', () => {

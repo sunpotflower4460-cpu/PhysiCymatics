@@ -90,6 +90,32 @@ export class TransientPlate {
     this._accelMode = m
     this.tauSlotTau.fill(NaN)
     this.tauSlotTauQH.fill(NaN)
+    // The live-DOF mask criterion depends on the mode (forced DOFs in
+    // 'ode'); rebuild it for the current segment so a mid-segment
+    // switch cannot leave evaluation paths summing different terms.
+    const seg = this.seg
+    if (seg) this.computeLiveMask(seg.q0, seg.qd0, seg.q1, seg.qd1, seg.t0, seg.t1)
+  }
+
+  private computeLiveMask(q0: Float64Array, qd0: Float64Array, q1: Float64Array, qd1: Float64Array, t0: number, t1: number): void {
+    const n = this.ndof
+    let lc = 0
+    if (this.liveMaskEnabled) {
+      let forcedLive = false
+      if (this.accelMode === 'ode') {
+        const ts0 = t0 - this.epoch; const ts1 = t1 - this.epoch
+        for (const e of this.signal.score.events) {
+          if (e.forcePeak_N !== 0 && e.start_s <= ts1 && e.end_s >= ts0) { forcedLive = true; break }
+        }
+      }
+      for (let j = 0; j < n; j++) {
+        if (q0[j] !== 0 || qd0[j] !== 0 || q1[j] !== 0 || qd1[j] !== 0
+          || (forcedLive && this.phiDrive[j] !== 0)) this.liveDofs[lc++] = j
+      }
+    } else {
+      for (let j = 0; j < n; j++) this.liveDofs[lc++] = j
+    }
+    this.liveCount = lc
   }
 
   constructor(score: PerformanceScore, driveXY: [number, number] = [0, 0]) {
@@ -332,30 +358,14 @@ export class TransientPlate {
     this.tauSlotTau.fill(NaN)
     this.tauSlotTauQ.fill(NaN)
     this.tauSlotTauQH.fill(NaN)
-    let lc = 0
-    if (this.liveMaskEnabled) {
-      // In 'ode' accel mode a DOF with all-zero Hermite endpoints can
-      // still have nonzero acceleration inside the segment when the
-      // drive force is nonzero there (the RK4 substeps may not sample
-      // a short event). Such DOFs must stay live so every evaluation
-      // path (surfAt / heightAccelAt / accelAt) sums the same terms.
-      // Their q/qd contributions are exact zeros, so h/uz are bitwise
-      // unaffected. Default 'hermite' masking is unchanged.
-      let forcedLive = false
-      if (this.accelMode === 'ode') {
-        const ts0 = t0 - this.epoch; const ts1 = t1 - this.epoch
-        for (const e of this.signal.score.events) {
-          if (e.forcePeak_N !== 0 && e.start_s <= ts1 && e.end_s >= ts0) { forcedLive = true; break }
-        }
-      }
-      for (let j = 0; j < n; j++) {
-        if (q0[j] !== 0 || qd0[j] !== 0 || q[j] !== 0 || qd[j] !== 0
-          || (forcedLive && this.phiDrive[j] !== 0)) this.liveDofs[lc++] = j
-      }
-    } else {
-      for (let j = 0; j < n; j++) this.liveDofs[lc++] = j
-    }
-    this.liveCount = lc
+    // In 'ode' accel mode a DOF with all-zero Hermite endpoints can
+    // still have nonzero acceleration inside the segment when the
+    // drive force is nonzero there (the RK4 substeps may not sample
+    // a short event). computeLiveMask keeps such DOFs live so every
+    // evaluation path (surfAt / heightAccelAt / accelAt) sums the same
+    // terms; their q/qd contributions are exact zeros, so h/uz are
+    // bitwise unaffected. Default 'hermite' masking is unchanged.
+    this.computeLiveMask(q0, qd0, q, qd, t0, t1)
     for (let j = 0; j < n; j++) {
       const r = hermiteQRange(q0[j], qd0[j], q[j], qd[j], t1 - t0)
       // Widen by a rounding hair for bound use (M6-5R): modalCoeffs
