@@ -3,7 +3,7 @@
 // parity under the new acceleration definition. Default 'hermite'
 // behavior is covered by the existing suites (bitwise unchanged).
 import { describe, it, expect } from 'vitest'
-import { singleToneScore } from '../sequence'
+import { singleToneScore, type PerformanceScore } from '../sequence'
 import { TransientPlate, hermiteQdRange } from '../plateTransient'
 import { createTransientSim, calibratedForceN, type TransientSandSim } from '../transientSand'
 import { G } from '../surface'
@@ -133,6 +133,46 @@ describe('M6-11 ode accel mode (plate)', () => {
       expect(w).toBeGreaterThanOrEqual(lb - 1e-6)
       expect(w).toBeLessThanOrEqual(ub + 1e-6)
     }
+  })
+})
+
+describe('M6-11 ode accel mode (Codex review regressions)', () => {
+  it('directly forced DOFs are included even with zero Hermite endpoints', () => {
+    // Short force event inside one segment, plate at rest: RK4 substeps
+    // need not sample the event, so Hermite endpoints can stay exactly
+    // zero while the ODE acceleration at mid-event is nonzero. The
+    // live-DOF mask must not drop those DOFs from accelAt.
+    const score: PerformanceScore = {
+      schema: 'physicymatics.score.v1', duration_s: 30, initialPhase_rad: Math.PI / 2, audioGain: 0.2,
+      events: [{ start_s: 1e-6, end_s: 2e-6, frequency_hz: 152, forcePeak_N: 10, attack_s: 0, release_s: 0 }],
+    }
+    const plate = new TransientPlate(score, [0, 0])
+    plate.accelMode = 'ode'
+    const dt = 1 / (44 * 152)
+    plate.beginStep(0, dt)
+    const out = new Float64Array(5)
+    plate.surfAt(0.02, 0.01, 1.5e-6, out)
+    const wA = plate.accelAt(0.02, 0.01, 1.5e-6)
+    expect(Math.abs(out[4])).toBeGreaterThan(1)
+    expect(wA).toBe(out[4])
+  })
+
+  it('switching accelMode mid-segment invalidates cached coefficients', () => {
+    const plate = excitedPlate('hermite')
+    const dt = 1 / (44 * 152)
+    plate.beginStep(0, dt)
+    const out = new Float64Array(5)
+    plate.surfAt(0.02, 0.01, 1e-5, out)
+    const wH = out[4]
+    plate.accelMode = 'ode'
+    plate.surfAt(0.02, 0.01, 1e-5, out)
+    expect(out[4]).not.toBe(wH)
+    expect(plate.accelAt(0.02, 0.01, 1e-5)).toBe(out[4])
+    // Switching back restores the hermite definition consistently.
+    plate.accelMode = 'hermite'
+    plate.surfAt(0.02, 0.01, 1e-5, out)
+    expect(out[4]).toBe(wH)
+    expect(plate.accelAt(0.02, 0.01, 1e-5)).toBe(wH)
   })
 })
 

@@ -77,8 +77,20 @@ export class TransientPlate {
    *  equation of motion applied to the Hermite q/qd, instead of the
    *  Hermite second derivative. Only wtt changes (h/uz stay bitwise the
    *  Hermite values); results are NOT bitwise vs the default. Default
-   *  'hermite' is the production model. See docs/m6_11_results.md. */
-  accelMode: 'hermite' | 'ode' = 'hermite'
+   *  'hermite' is the production model. See docs/m6_11_results.md.
+   *  Switching invalidates the tau coefficient caches so evaluations
+   *  never mix definitions within a segment. Sim-level caches (sleep
+   *  lookahead) must additionally be invalidated by the caller when
+   *  switching mid-run (wakeAll + refreshForceBounds), exactly as for
+   *  drive-condition changes. */
+  private _accelMode: 'hermite' | 'ode' = 'hermite'
+  get accelMode(): 'hermite' | 'ode' { return this._accelMode }
+  set accelMode(m: 'hermite' | 'ode') {
+    if (m === this._accelMode) return
+    this._accelMode = m
+    this.tauSlotTau.fill(NaN)
+    this.tauSlotTauQH.fill(NaN)
+  }
 
   constructor(score: PerformanceScore, driveXY: [number, number] = [0, 0]) {
     this.signal = new ScoreSignal(score)
@@ -322,8 +334,23 @@ export class TransientPlate {
     this.tauSlotTauQH.fill(NaN)
     let lc = 0
     if (this.liveMaskEnabled) {
+      // In 'ode' accel mode a DOF with all-zero Hermite endpoints can
+      // still have nonzero acceleration inside the segment when the
+      // drive force is nonzero there (the RK4 substeps may not sample
+      // a short event). Such DOFs must stay live so every evaluation
+      // path (surfAt / heightAccelAt / accelAt) sums the same terms.
+      // Their q/qd contributions are exact zeros, so h/uz are bitwise
+      // unaffected. Default 'hermite' masking is unchanged.
+      let forcedLive = false
+      if (this.accelMode === 'ode') {
+        const ts0 = t0 - this.epoch; const ts1 = t1 - this.epoch
+        for (const e of this.signal.score.events) {
+          if (e.forcePeak_N !== 0 && e.start_s <= ts1 && e.end_s >= ts0) { forcedLive = true; break }
+        }
+      }
       for (let j = 0; j < n; j++) {
-        if (q0[j] !== 0 || qd0[j] !== 0 || q[j] !== 0 || qd[j] !== 0) this.liveDofs[lc++] = j
+        if (q0[j] !== 0 || qd0[j] !== 0 || q[j] !== 0 || qd[j] !== 0
+          || (forcedLive && this.phiDrive[j] !== 0)) this.liveDofs[lc++] = j
       }
     } else {
       for (let j = 0; j < n; j++) this.liveDofs[lc++] = j
