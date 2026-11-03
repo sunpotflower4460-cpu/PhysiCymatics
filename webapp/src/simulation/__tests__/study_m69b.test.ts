@@ -74,7 +74,7 @@ benchIt('M6-9 experiments A2/B2/C2', () => {
     // Excite only the target mode's cos DOF strongly.
     const mi = plate.modes.findIndex((m) => `m${m.m}r${m.root_idx}` === dofPick)
     let dof = -1
-    for (let j = 0; j < plate.ndof; j++) if (plate.dofMode[j] === mi && plate.dofCos[j]) { dof = j; break }
+    for (let j = 0; j < plate.ndof; j++) if ((plate as unknown as { dofMode: Int32Array; dofCos: boolean[] }).dofMode[j] === mi && (plate as unknown as { dofMode: Int32Array; dofCos: boolean[] }).dofCos[j]) { dof = j; break }
     plate.q[dof] = 8e-4
     const dt = 1 / (44 * freq)
     plate.beginStep(0, dt)
@@ -109,7 +109,7 @@ benchIt('M6-9 experiments A2/B2/C2', () => {
         const bouncedBy = (tEnd: number): boolean => {
           const plate = new TransientPlate(singleToneScore(freq, 0, 30))
           const mi = plate.modes.findIndex((m) => `m${m.m}r${m.root_idx}` === dofPick)
-          for (let j = 0; j < plate.ndof; j++) if (plate.dofMode[j] === mi && plate.dofCos[j]) plate.q[j] = 8e-4
+          for (let j = 0; j < plate.ndof; j++) if ((plate as unknown as { dofMode: Int32Array; dofCos: boolean[] }).dofMode[j] === mi && (plate as unknown as { dofMode: Int32Array; dofCos: boolean[] }).dofCos[j]) plate.q[j] = 8e-4
           const sim = new TransientSandSim(plate, initialState(plate.a, 1, seedI),
             { ...DEFAULT_PARAMS, spp }, { enabled: false })
           sim.advanceTo(tEnd)
