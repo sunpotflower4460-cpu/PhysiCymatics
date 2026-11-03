@@ -86,6 +86,72 @@ def test_ode_lookahead_bounds_implemented_accel(basis):
         assert lb - 1e-6 <= w <= ub + 1e-6
 
 
+def test_advance_to_grid_target_no_degenerate_step(basis):
+    # M6-11R regression: advance_to(0.1) at 500 Hz used to create a
+    # ~1e-15 s final segment whose Hermite acceleration is garbage,
+    # spuriously detaching seated grains. Pure step() driving is the
+    # reference.
+    def run(driver):
+        probe = pt.TransientPlate(basis, pt.ScoreSignal(
+            [dict(start_s=0.0, end_s=1.0, frequency_hz=152.0, forcePeak_N=1.0,
+                  attack_s=0.0, release_s=0.0)]))
+        i152 = next(i for i, md in enumerate(basis["modes"]) if md["m"] == 0 and md["root_idx"] == 0)
+        F = float(probe.force_for_amplitude(i152, 860e-6))
+        score = pt.ScoreSignal([dict(start_s=0.0, end_s=60.0, frequency_hz=500.0,
+                                      forcePeak_N=F, attack_s=0.05, release_s=0.0)])
+        plate = pt.TransientPlate(basis, score)
+        st, _ = sb.initial_state(basis["modes"][0], 30, seed=12345)
+        sim = pt.TransientSandSim(plate, st, sleep_enabled=True)
+        driver(sim)
+        return sim
+
+    def by_steps(sim):
+        dt = sim.dt_now()
+        for _ in range(round(0.1 / dt)):
+            sim.step()
+
+    stepped = run(by_steps)
+    adv = run(lambda sim: sim.advance_to(0.1))
+    assert adv.t == 0.1
+    assert adv.n_detach == stepped.n_detach
+    assert adv.n_bounce == stepped.n_bounce
+
+
+def test_ode_wtt_lower_bound_and_finder(basis):
+    plate = _plate(basis, "ode", force=1.0)
+    dt = 1.0 / (44 * 152)
+    plate.begin_step(0.0, dt)
+    rng = np.random.default_rng(3)
+    for _ in range(30):
+        x, y = rng.uniform(-0.1, 0.1), rng.uniform(-0.1, 0.1)
+        ta = float(rng.uniform(0.0, dt * 0.8))
+        tb = ta + float(rng.uniform(0.2, 1.0)) * (dt - ta)
+        lb = plate.wtt_lower_bound(x, y, ta, tb)
+        for s in np.linspace(ta, tb, 21):
+            w = float(plate.surf_at(np.array([x]), np.array([y]), float(s))[4][0])
+            assert w >= lb - 1e-6
+    # Finder agrees with a dense scan on segments where roots exist.
+    seg_t = dt
+    found = 0
+    for _ in range(20):
+        plate.begin_step(seg_t, seg_t + dt)
+        for xy in ((0.02, 0.01), (-0.04, 0.03)):
+            got = plate.first_detach_below(xy[0], xy[1], seg_t, seg_t + dt)
+            ts = np.linspace(seg_t, seg_t + dt, 2001)
+            ws = plate.surf_at(np.full(ts.size, xy[0]), np.full(ts.size, xy[1]), ts)[4]
+            below = np.where(ws < -pt.G)[0]
+            if below.size == 0:
+                assert got is None
+            else:
+                found += 1
+                assert got is not None
+                assert abs(got - float(ts[below[0]])) < dt / 2000 + 2e-6
+        seg_t += dt
+        if found >= 3:
+            break
+    assert found > 0
+
+
 def test_default_mode_is_hermite(basis):
     plate = pt.TransientPlate(basis, pt.ScoreSignal(
         [dict(start_s=0.0, end_s=1.0, frequency_hz=152.0, forcePeak_N=0.0,

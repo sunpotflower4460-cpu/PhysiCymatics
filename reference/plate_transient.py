@@ -190,7 +190,10 @@ class TransientPlate:
               + (-6*s2 + 6*s)*q1 + (3*s2 - 2*s)*h*qd1)/h
         qdd = ((12*s - 6)*q0 + (6*s - 4)*h*qd0
                + (-12*s + 6)*q1 + (6*s - 2)*h*qd1)/(h*h)
-        if self.accel_mode == "ode":
+        if self.accel_mode == "ode" or h < 1e-7:
+            # Tiny segments always use the ODE form: the Hermite qdd
+            # divides by h^2 and degenerates into cancellation garbage
+            # as h -> 0, while the ODE form is its stable limit.
             qdd = self._accel(q, qd, tau)
         return q, qd, qdd
 
@@ -248,7 +251,7 @@ class TransientPlate:
             if np.ndim(s) == 0:
                 q = c_q0*q0 + c_qd0*qd0 + c_q1*q1 + c_qd1*qd1
                 qd = d_q0*q0 + d_qd0*qd0 + d_q1*q1 + d_qd1*qd1
-                if self.accel_mode == "ode":
+                if self.accel_mode == "ode" or hseg < 1e-7:
                     qdd = self._accel(q, qd, float(tau))
                 else:
                     qdd = a_q0*q0 + a_qd0*qd0 + a_q1*q1 + a_qd1*qd1
@@ -264,7 +267,7 @@ class TransientPlate:
                 aq1 = (-12*ss + 6)/(hseg*hseg); aqd1 = (6*ss - 2)/hseg
                 q = cq0*q0[:, None] + cqd0*qd0[:, None] + cq1*q1[:, None] + cqd1*qd1[:, None]
                 qd = dq0*q0[:, None] + dqd0*qd0[:, None] + dq1*q1[:, None] + dqd1*qd1[:, None]
-                if self.accel_mode == "ode":
+                if self.accel_mode == "ode" or hseg < 1e-7:
                     taus = t0 + ss*hseg
                     Farr = np.array([self.score.force_peak_at(float(tt))*self.score.u(float(tt))
                                      for tt in np.atleast_1d(taus)])
@@ -282,6 +285,106 @@ class TransientPlate:
     def v_scale(self):
         q, qd = (self._seg[5], self._seg[6]) if self._seg else (self.q, self.qd)
         return float(np.sqrt(np.sum(qd**2 + (self.omega*q)**2)))
+
+    def wtt_lower_bound(self, x, y, ta, tb):
+        """Conservative lower bound of implemented wtt at fixed (x, y)
+        over [ta, tb] in the current segment (mirrors TS wttLowerBound;
+        force bound here is the loose |F| <= max overlapping forcePeak).
+        """
+        if self._seg is None:
+            return -np.inf
+        t0, t1 = self._seg[0], self._seg[1]
+        if self.accel_mode != "ode" and (t1 - t0) >= 1e-7:
+            wa = float(self.surf_at(np.array([x]), np.array([y]), float(ta))[4][0])
+            wb = float(self.surf_at(np.array([x]), np.array([y]), float(tb))[4][0])
+            return min(wa, wb)
+        qa, qda, _ = self._hermite(float(ta))
+        qb, qdb, _ = self._hermite(float(tb))
+        h = float(tb) - float(ta)
+        A = 6*(qa - qb) + 3*h*(qda + qdb)
+        B = -6*qa + 6*qb + h*(-4*qda - 2*qdb)
+        C = h*qda
+        sqmin = np.minimum(qa, qb); sqmax = np.maximum(qa, qb)
+        disc = B*B - 4*A*C
+        with np.errstate(invalid="ignore", divide="ignore"):
+            sq = np.sqrt(np.maximum(disc, 0.0))
+            for s_ in ((-B - sq)/np.where(A != 0, 2*A, 1.0), (-B + sq)/np.where(A != 0, 2*A, 1.0)):
+                valid = (A != 0) & (disc >= 0) & (s_ > 0) & (s_ < 1)
+                s2, s3 = s_*s_, s_*s_*s_
+                qv = ((2*s3 - 3*s2 + 1)*qa + (s3 - 2*s2 + s_)*h*qda
+                      + (-2*s3 + 3*s2)*qb + (s3 - s2)*h*qdb)
+                sqmin = np.where(valid, np.minimum(sqmin, qv), sqmin)
+                sqmax = np.where(valid, np.maximum(sqmax, qv), sqmax)
+            qdmin = np.minimum(qda, qdb); qdmax = np.maximum(qda, qdb)
+            sv = -B/np.where(A != 0, 2*A, 1.0)
+            valid = (A != 0) & (sv > 0) & (sv < 1)
+            vv = (A*sv*sv + B*sv + C)/h
+            qdmin = np.where(valid, np.minimum(qdmin, vv), qdmin)
+            qdmax = np.where(valid, np.maximum(qdmax, vv), qdmax)
+        fpk = 0.0
+        for e in self.score.events:
+            if e["start_s"] <= tb and e["end_s"] >= ta:
+                fpk = max(fpk, abs(e["forcePeak_N"]))
+        d_abs = np.abs(self.phi_drive/self.mass)*fpk
+        w = self.omega
+        lo = -d_abs - 2*self.zeta*w*qdmax - w*w*sqmax
+        hi = d_abs - 2*self.zeta*w*qdmin - w*w*sqmin
+        wd = 1e-9*(1.0 + np.abs(lo) + np.abs(hi))
+        lo -= wd; hi += wd
+        phis = np.array([float(_phi_grad(self.modes[d["mode"]], d["kind"],
+                                          np.array([x]), np.array([y]))[0][0])
+                         for d in self.dofs])
+        return float(np.minimum(phis*lo, phis*hi).sum())
+
+    def first_detach_below(self, x, y, ta, tb):
+        """First t in [ta, tb] with implemented wtt < -G at fixed (x, y),
+        or None. Scan fast path, then interval-bound refinement with a
+        bounded budget (mirrors TS firstDetachBelow)."""
+        if self._seg is None:
+            return None
+        wfun = lambda t: float(self.surf_at(np.array([x]), np.array([y]), float(t))[4][0])
+        def bisect(a, b):
+            lo, hi = a, b
+            for _ in range(40):
+                m = 0.5*(lo + hi)
+                if wfun(m) >= -G:
+                    lo = m
+                else:
+                    hi = m
+            return 0.5*(lo + hi)
+        wa0 = wfun(ta)
+        if wa0 < -G:
+            return float(ta)
+        tp = float(ta); wb0 = wa0
+        for k in range(1, 9):
+            t = ta + (tb - ta)*(k/8.0)
+            w = wfun(t)
+            if w < -G:
+                return bisect(tp, t)
+            tp = t; wb0 = w
+        budget = [48]
+        def search(a, b, wa, wb, depth):
+            if wb < -G:
+                if depth <= 0 or b - a < 1e-10:
+                    return bisect(a, b)
+                m = 0.5*(a + b); wm = wfun(m)
+                if wm < -G:
+                    return search(a, m, wa, wm, depth - 1)
+                r = search(a, m, wa, wm, depth - 1)
+                return r if r is not None else search(m, b, wm, wb, depth - 1)
+            if budget[0] <= 0:
+                return None
+            budget[0] -= 1
+            if self.wtt_lower_bound(x, y, a, b) >= -G:
+                return None
+            if depth <= 0 or b - a < 1e-10:
+                return None
+            m = 0.5*(a + b); wm = wfun(m)
+            if wm < -G:
+                return search(a, m, wa, wm, depth - 1)
+            r = search(a, m, wa, wm, depth - 1)
+            return r if r is not None else search(m, b, wm, wb, depth - 1)
+        return search(float(ta), float(tb), wa0, wb0, 10)
 
     def lookahead_ranges(self, from_t, window, dt_at):
         """Exact per-DOF Hermite q/qdd ranges over a future window, from a
@@ -317,7 +420,7 @@ class TransientPlate:
                     sqmin = np.where(valid, np.minimum(sqmin, qv), sqmin)
                     sqmax = np.where(valid, np.maximum(sqmax, qv), sqmax)
             qmin = np.minimum(qmin, sqmin); qmax = np.maximum(qmax, sqmax)
-            if self.accel_mode == "ode":
+            if self.accel_mode == "ode" or h < 1e-7:
                 # Interval evaluation of the ODE right hand side over the
                 # exact Hermite q/qd ranges (mirrors TS lookaheadRanges).
                 qdmin = np.minimum(qd, qd1); qdmax = np.maximum(qd, qd1)
@@ -617,34 +720,16 @@ class TransientSandSim:
                     cur[si] = t_new
                 elif pl.accel_mode == "ode":
                     # M6-11 research: ODE wtt is not linear in time, so the
-                    # exact root below does not apply. Vectorized scan +
-                    # bisection (mirrors TS detachTimeOde, K=8); root pairs
-                    # inside one scan subinterval can be missed.
-                    _,_,_,_, w0 = pl.surf_at(x[si], y[si], cur[si])
+                    # exact root below does not apply. Interval-assisted
+                    # per-particle search on the plate (mirrors TS
+                    # detachTimeOde -> firstDetachBelow).
                     hs1,_,_,_, _w1 = pl.surf_at(x[si], y[si], np.full(si.size, t_new))
                     td = np.full(si.size, np.nan)
-                    det_now = w0 < -G
-                    td[det_now] = cur[si][det_now]
-                    open_m = ~det_now
-                    t_prev = cur[si].copy()
-                    for k in range(1, 9):
-                        if not open_m.any():
-                            break
-                        tk = cur[si] + (t_new - cur[si])*(k/8.0)
-                        oi = np.where(open_m)[0]
-                        _,_,_,_, wk = pl.surf_at(x[si][oi], y[si][oi], tk[oi])
-                        hit_local = wk < -G
-                        if hit_local.any():
-                            hj = oi[hit_local]
-                            lo = t_prev[hj].copy(); hi = tk[hj].copy()
-                            for _ in range(40):
-                                mid = 0.5*(lo + hi)
-                                _,_,_,_, wm = pl.surf_at(x[si][hj], y[si][hj], mid)
-                                ge = wm >= -G
-                                lo = np.where(ge, mid, lo); hi = np.where(ge, hi, mid)
-                            td[hj] = 0.5*(lo + hi)
-                            open_m[hj] = False
-                        t_prev = tk
+                    for li, gi in enumerate(si):
+                        r = pl.first_detach_below(float(x[gi]), float(y[gi]),
+                                                  float(cur[gi]), t_new)
+                        if r is not None:
+                            td[li] = r
                     stay = np.isnan(td)
                     if stay.any():
                         sj = si[stay]; z[sj] = hs1[stay]; cur[sj] = t_new
@@ -854,7 +939,19 @@ class TransientSandSim:
         self.t = t_new
 
     def advance_to(self, t_target):
-        """Advance to EXACTLY t_target (final step shortened; never overshoots)."""
-        while self.t < t_target - 1e-15:
-            self.step(min(self.dt_now(), t_target - self.t))
+        """Advance to EXACTLY t_target (final step shortened; never overshoots).
+
+        A floating-point accumulation remnant must not become a plate
+        segment: for h ~ 1e-15 s the Hermite acceleration (division by
+        h^2) is cancellation garbage and spuriously detaches seated
+        grains (M6-11R finding, mirrors TS advanceTo). Remnants below
+        the threshold are snapped without stepping.
+        """
+        while True:
+            rem = t_target - self.t
+            if rem <= max(1e-12, self.dt_now() * 1e-9):
+                break
+            self.step(min(self.dt_now(), rem))
+        if self.t < t_target:
+            self.t = t_target
         self.materialize_all()

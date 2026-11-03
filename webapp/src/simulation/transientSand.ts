@@ -709,30 +709,13 @@ export class TransientSandSim {
   }
 
   /** First time in [cur, tNew] where the implemented (ODE-mode) wtt at
-   *  the seated particle's fixed (x, y) crosses below -G, by scan +
-   *  bisection on accelAt; null if no sign change is sampled. Root
-   *  pairs that open and close inside one scan subinterval are missed
-   *  by construction (documented limit, measured in study_m611). */
+   *  the seated particle's fixed (x, y) crosses below -G. Delegates to
+   *  the plate's interval-assisted search (M6-11R): subintervals are
+   *  excluded only by a conservative lower bound, so root pairs are
+   *  not missed by sampling (up to the bound's rounding hair and the
+   *  documented recursion floor). */
   private detachTimeOde(i: number, cur: number, tNew: number): number | null {
-    const pl = this.plate; const st = this.state
-    const K = 8
-    let tp = cur
-    let wp = pl.accelAt(st.x[i], st.y[i], cur) + G
-    if (wp < 0) return cur
-    for (let k = 1; k <= K; k++) {
-      const t = cur + ((tNew - cur) * k) / K
-      const w = pl.accelAt(st.x[i], st.y[i], t) + G
-      if (w < 0) {
-        let lo = tp; let hi = t
-        for (let it = 0; it < 40; it++) {
-          const m = 0.5 * (lo + hi)
-          if (pl.accelAt(st.x[i], st.y[i], m) + G >= 0) lo = m; else hi = m
-        }
-        return 0.5 * (lo + hi)
-      }
-      tp = t; wp = w
-    }
-    return null
+    return this.plate.firstDetachBelow(this.state.x[i], this.state.y[i], cur, tNew)
   }
 
   /** Advance one awake particle from t to tNew (events, fallback, sleep
@@ -747,10 +730,8 @@ export class TransientSandSim {
           this.sittingSteps++
           if (pl.accelMode === 'ode') {
             // M6-11 research: ODE wtt is not linear in tau, so the exact
-            // root below does not apply. Scan + bisect instead (root
-            // pairs inside one scan subinterval can be missed — the
-            // same class of limit as contact sampling; measured miss
-            // rate in study_m611, not a proof).
+            // root below does not apply. Interval-assisted search on
+            // the plate instead (see firstDetachBelow).
             const tdOde = this.detachTimeOde(i, cur, tNew)
             if (tdOde === null) {
               pl.heightAccelAt(st.x[i], st.y[i], tNew, S2)
@@ -944,7 +925,17 @@ export class TransientSandSim {
   }
 
   advanceTo(tTarget: number): void {
-    while (this.t < tTarget - 1e-15) this.step(Math.min(this.dtNow(), tTarget - this.t))
+    // Never turn a floating-point accumulation remnant into a plate
+    // segment: for h ~ 1e-15 s the Hermite acceleration (division by
+    // h^2) is pure cancellation garbage and spuriously detaches seated
+    // grains (M6-11R finding). Remnants below this threshold carry no
+    // resolvable physics; snap to the target instead of stepping.
+    for (;;) {
+      const rem = tTarget - this.t
+      if (rem <= Math.max(1e-12, this.dtNow() * 1e-9)) break
+      this.step(Math.min(this.dtNow(), rem))
+    }
+    if (this.t < tTarget) this.t = tTarget
     this.materializeAll()
   }
 

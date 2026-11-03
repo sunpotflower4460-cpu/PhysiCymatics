@@ -5,7 +5,9 @@
 import { describe, it, expect } from 'vitest'
 import { singleToneScore, type PerformanceScore } from '../sequence'
 import { TransientPlate, hermiteQdRange } from '../plateTransient'
-import { createTransientSim, calibratedForceN, type TransientSandSim } from '../transientSand'
+import { TransientSandSim, createTransientSim, calibratedForceN } from '../transientSand'
+import { initialState } from '../sand'
+import { DEFAULT_PARAMS } from '../types'
 import { G } from '../surface'
 
 function excitedPlate(mode: 'hermite' | 'ode', freq = 152, forceN = 0): TransientPlate {
@@ -181,6 +183,96 @@ describe('M6-11 ode accel mode (Codex review regressions)', () => {
     plate.surfAt(0.02, 0.01, 1e-5, out)
     expect(out[4]).toBe(wH)
     expect(plate.accelAt(0.02, 0.01, 1e-5)).toBe(wH)
+  })
+})
+
+describe('M6-11R degenerate tiny final step (production bugfix)', () => {
+  it('advanceTo on the step grid matches pure step() driving (500Hz)', () => {
+    // Regression: advanceTo(0.1) at 500Hz used to create a ~1e-15 s
+    // final segment whose Hermite acceleration is cancellation
+    // garbage, spuriously detaching ~51 of 60 seated grains.
+    const mkSim = () => {
+      const plate = new TransientPlate(singleToneScore(500, calibratedForceN(), 30), [0, 0])
+      return new TransientSandSim(plate, initialState(plate.a, 60, 12345), { ...DEFAULT_PARAMS, spp: 44 }, { enabled: true })
+    }
+    const stepped = mkSim()
+    const nSteps = Math.round(0.1 / stepped.dtNow())
+    for (let k = 0; k < nSteps; k++) stepped.step()
+    const adv = mkSim()
+    adv.advanceTo(0.1)
+    expect(adv.t).toBe(0.1)
+    expect(adv.nDetach).toBe(stepped.nDetach)
+    expect(adv.nBounce).toBe(stepped.nBounce)
+  })
+
+  it('tiny segments evaluate sane acceleration (no 1/h^2 garbage)', () => {
+    const plate = excitedPlate('hermite')
+    plate.beginStep(0, 1e-12)
+    const out = new Float64Array(5)
+    plate.surfAt(0.02, 0.01, 5e-13, out)
+    expect(Number.isFinite(out[4])).toBe(true)
+    expect(Math.abs(out[4])).toBeLessThan(1e5)
+    expect(plate.accelAt(0.02, 0.01, 5e-13)).toBe(out[4])
+  })
+})
+
+describe('M6-11R interval-assisted detach search', () => {
+  it('wttLowerBound bounds dense accelAt samples (ode mode)', () => {
+    const plate = excitedPlate('ode', 152, calibratedForceN())
+    const dt = 1 / (44 * 152)
+    plate.beginStep(0, dt)
+    let seed = 77
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff }
+    for (let k = 0; k < 60; k++) {
+      const x = (rnd() * 2 - 1) * plate.a * 0.9
+      const y = (rnd() * 2 - 1) * plate.a * 0.9
+      const ta = rnd() * dt * 0.8
+      const tb = ta + (0.2 + 0.8 * rnd()) * (dt - ta)
+      const lb = plate.wttLowerBound(x, y, ta, tb)
+      for (let sN = 0; sN <= 40; sN++) {
+        const w = plate.accelAt(x, y, ta + ((tb - ta) * sN) / 40)
+        expect(w).toBeGreaterThanOrEqual(lb - 1e-6)
+      }
+    }
+  })
+
+  it('firstDetachBelow matches a dense-scan first root (ode mode)', () => {
+    const plate = excitedPlate('ode', 152, calibratedForceN())
+    const dt = 1 / (44 * 152)
+    const denseFirst = (x: number, y: number, t0: number): number | null => {
+      let tp = t0; let fp = plate.accelAt(x, y, t0) + 9.81
+      if (fp < 0) return t0
+      for (let k = 1; k <= 2000; k++) {
+        const t = t0 + (dt * k) / 2000
+        const ft = plate.accelAt(x, y, t) + 9.81
+        if (ft < 0) {
+          let lo = tp; let hi = t
+          for (let it = 0; it < 50; it++) {
+            const m = 0.5 * (lo + hi)
+            if (plate.accelAt(x, y, m) + 9.81 >= 0) lo = m; else hi = m
+          }
+          return 0.5 * (lo + hi)
+        }
+        tp = t; fp = ft
+      }
+      return null
+    }
+    let segT = 0; let rootsFound = 0
+    for (let s = 0; s < 30 && rootsFound < 5; s++) {
+      plate.beginStep(segT, segT + dt)
+      for (const [x, y] of [[0.02, 0.01], [-0.04, 0.03], [0.0, 0.0]] as const) {
+        const got = plate.firstDetachBelow(x, y, segT, segT + dt)
+        const want = denseFirst(x, y, segT)
+        if (want === null) expect(got).toBeNull()
+        else {
+          rootsFound++
+          expect(got).not.toBeNull()
+          expect(Math.abs((got as number) - want)).toBeLessThan(2e-6)
+        }
+      }
+      segT += dt
+    }
+    expect(rootsFound).toBeGreaterThan(0)
   })
 })
 

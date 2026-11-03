@@ -4,6 +4,7 @@
 // cubic-Hermite state evaluation inside a sand step.
 import basisData from '../data/plate_modes_transient.json'
 import { ScoreSignal, type PerformanceScore } from './sequence'
+import { G } from './surface'
 
 interface ModeRow { m: number; root_idx: number; f_hz: number; M_kg: number; R: number[]; dR_drho: number[] }
 interface BasisData { a_m: number; ngrid: number; zeta: number; modes: ModeRow[] }
@@ -439,7 +440,10 @@ export class TransientPlate {
     const Rr = -12 * s + 6; const Ss = (6 * s - 2) * hseg
     const hh = hseg * hseg
     const { q0, qd0, q1, qd1 } = seg
-    if (this.accelMode === 'ode') {
+    // Tiny segments (h < 1e-7 s) always use the ODE form: the Hermite
+    // qdd divides by h^2 and degenerates into cancellation garbage as
+    // h -> 0, while the ODE form is its stable limit (M6-11R).
+    if (this.accelMode === 'ode' || hseg < 1e-7) {
       const ts = tau - this.epoch
       const Fd = this.signal.forcePeakAt(ts) * this.signal.u(ts)
       for (let j = 0; j < n; j++) {
@@ -568,7 +572,10 @@ export class TransientPlate {
     const Rr = -12 * s + 6; const Ss = (6 * s - 2) * hseg
     const hh = hseg * hseg
     const { q0, qd0, q1, qd1 } = seg
-    if (this.accelMode === 'ode') {
+    // Tiny segments (h < 1e-7 s) always use the ODE form: the Hermite
+    // qdd divides by h^2 and degenerates into cancellation garbage as
+    // h -> 0, while the ODE form is its stable limit (M6-11R).
+    if (this.accelMode === 'ode' || hseg < 1e-7) {
       const E = 6 * s2 - 6 * s; const F = (3 * s2 - 4 * s + 1) * hseg
       const Gc = -6 * s2 + 6 * s; const H = (3 * s2 - 2 * s) * hseg
       const ts = tau - this.epoch
@@ -674,6 +681,159 @@ export class TransientPlate {
     return wtt
   }
 
+  /** Evaluation counter for wttLowerBound (research accounting). */
+  wttBoundCalls = 0
+  private boundPhi: Float64Array | null = null
+
+  /** Conservative lower bound of the *implemented* wtt at fixed (x, y)
+   *  over [ta, tb] inside the current segment. Hermite form is linear
+   *  in tau, so its bound is the exact endpoint minimum. The ODE form
+   *  (also used for tiny segments) is bounded by interval evaluation
+   *  of the equation of motion over the exact Hermite q/qd ranges on
+   *  the subinterval and the drive-force bound |F| <= max overlapping
+   *  forcePeak, widened by a rounding hair (same construction as
+   *  lookaheadRanges). Returns -Infinity when no segment is active. */
+  wttLowerBound(x: number, y: number, ta: number, tb: number): number {
+    const seg = this.seg
+    if (!seg) return -Infinity
+    this.wttBoundCalls++
+    const hseg = seg.t1 - seg.t0
+    if (this.accelMode !== 'ode' && hseg >= 1e-7) {
+      return Math.min(this.accelAt(x, y, ta), this.accelAt(x, y, tb))
+    }
+    const n = this.ndof
+    const baseA = this.modalCoeffs(ta)
+    const qa = this.tauQ.slice(baseA, baseA + n)
+    const qda = this.tauQd.slice(baseA, baseA + n)
+    const baseB = this.modalCoeffs(tb)
+    const qb = this.tauQ.slice(baseB, baseB + n)
+    const qdb = this.tauQd.slice(baseB, baseB + n)
+    if (!this.boundPhi) this.boundPhi = new Float64Array(n)
+    const phi = this.boundPhi
+    this.phiAll(x, y, phi)
+    const [fLo, fHi] = this.forceRange(ta, tb)
+    const h = tb - ta
+    let lb = 0
+    for (let j = 0; j < n; j++) {
+      const rq = hermiteQRange(qa[j], qda[j], qb[j], qdb[j], h)
+      const rd = hermiteQdRange(qa[j], qda[j], qb[j], qdb[j], h)
+      const w = this.omega[j]
+      const c = this.phiDrive[j] / this.mass[j]
+      const dLo = Math.min(c * fLo, c * fHi); const dHi = Math.max(c * fLo, c * fHi)
+      let lo = dLo - 2 * this.zeta * w * rd[1] - w * w * rq[1]
+      let hi = dHi - 2 * this.zeta * w * rd[0] - w * w * rq[0]
+      const wd = 1e-9 * (1 + Math.abs(lo) + Math.abs(hi))
+      lo -= wd; hi += wd
+      lb += Math.min(phi[j] * lo, phi[j] * hi)
+    }
+    return lb
+  }
+
+  /** Conservative [min, max] of the drive force F(t) over [ta, tb]
+   *  (physics times). Within one score event the envelope is
+   *  up-then-flat-then-down and the phase is monotone, so exact ranges
+   *  follow from endpoints plus plateau/extremum containment. Across
+   *  event boundaries (or outside events) fall back to the global
+   *  |F| <= max overlapping forcePeak bound. */
+  private forceRange(ta: number, tb: number): [number, number] {
+    const ts0 = ta - this.epoch; const ts1 = tb - this.epoch
+    const sig = this.signal
+    let fpk = 0
+    for (const e of sig.score.events) {
+      if (e.start_s <= ts1 && e.end_s >= ts0) fpk = Math.max(fpk, Math.abs(e.forcePeak_N))
+    }
+    const eA = sig.eventAt(ts0); const eB = sig.eventAt(ts1)
+    if (!eA || !eB || eA.ev !== eB.ev) return [-fpk, fpk]
+    const ev = eA.ev
+    // Envelope replica of ScoreSignal.u (smoothstep attack/release).
+    const envAt = (t: number): number => {
+      let env = 1
+      if (ev.attack_s > 0 && t < ev.start_s + ev.attack_s) {
+        const u = (t - ev.start_s) / ev.attack_s
+        env = Math.min(env, u * u * (3 - 2 * u))
+      }
+      if (ev.release_s > 0 && t > ev.end_s - ev.release_s) {
+        const u = (ev.end_s - t) / ev.release_s
+        env = Math.min(env, u * u * (3 - 2 * u))
+      }
+      return env
+    }
+    let eLo = Math.min(envAt(ts0), envAt(ts1))
+    let eHi = Math.max(envAt(ts0), envAt(ts1))
+    if (ts0 < ev.end_s - ev.release_s && ts1 > ev.start_s + ev.attack_s) eHi = 1
+    if (eLo < 0) eLo = 0
+    const thA = sig.thetaAt(ts0); const thB = sig.thetaAt(ts1)
+    let sLo = Math.min(Math.sin(thA), Math.sin(thB))
+    let sHi = Math.max(Math.sin(thA), Math.sin(thB))
+    if (thB - thA >= 2 * Math.PI) { sLo = -1; sHi = 1 } else {
+      const k0 = Math.ceil((thA - Math.PI / 2) / (2 * Math.PI))
+      if (Math.PI / 2 + 2 * Math.PI * k0 <= thB) sHi = 1
+      const k1 = Math.ceil((thA - 3 * Math.PI / 2) / (2 * Math.PI))
+      if (3 * Math.PI / 2 + 2 * Math.PI * k1 <= thB) sLo = -1
+    }
+    const pLo = sLo >= 0 ? eLo * sLo : eHi * sLo
+    const pHi = sHi >= 0 ? eHi * sHi : eLo * sHi
+    const F = ev.forcePeak_N
+    return F >= 0 ? [F * pLo, F * pHi] : [F * pHi, F * pLo]
+  }
+
+  /** First time in [ta, tb] (inside the current segment) at which the
+   *  implemented wtt at fixed (x, y) crosses below -G, or null.
+   *  Sign changes are bisected; subintervals without one are excluded
+   *  only via wttLowerBound, so root pairs cannot be missed by
+   *  sampling (up to the bound's rounding hair) — unlike a fixed
+   *  scan. Recursion stops at depth 12 or width 1e-10 s; an
+   *  unresolved subinterval at that point returns null (its width is
+   *  below the model's other time resolutions and is reported via
+   *  wttBoundCalls growth in studies). Returns ta when already below. */
+  firstDetachBelow(x: number, y: number, ta: number, tb: number): number | null {
+    if (!this.seg) return null
+    const bisect = (a: number, b: number): number => {
+      let lo = a; let hi = b
+      for (let it = 0; it < 40; it++) {
+        const m = 0.5 * (lo + hi)
+        if (this.accelAt(x, y, m) >= -G) lo = m; else hi = m
+      }
+      return 0.5 * (lo + hi)
+    }
+    // Fast path: sampled sign change (the common detach case).
+    const K = 8
+    let tp = ta
+    const wa0 = this.accelAt(x, y, ta)
+    if (wa0 < -G) return ta
+    let wb0 = wa0
+    for (let k = 1; k <= K; k++) {
+      const t = ta + ((tb - ta) * k) / K
+      const w = this.accelAt(x, y, t)
+      if (w < -G) return bisect(tp, t)
+      tp = t; wb0 = w
+    }
+    // No sampled crossing: prove there is none via the interval bound,
+    // refining only where the bound is inconclusive. Bounded work:
+    // at most 48 bound evaluations; exhaustion returns null (the
+    // unresolved width is then below other model resolutions).
+    // Invariant for search: w(a) >= -G (endpoint values are threaded
+    // through so bisection always brackets a down-crossing).
+    let budget = 48
+    const search = (a: number, b: number, wa: number, wb: number, depth: number): number | null => {
+      if (wb < -G) {
+        if (depth <= 0 || b - a < 1e-10) return bisect(a, b)
+        const m = 0.5 * (a + b)
+        const wm = this.accelAt(x, y, m)
+        if (wm < -G) return search(a, m, wa, wm, depth - 1)
+        return search(a, m, wa, wm, depth - 1) ?? search(m, b, wm, wb, depth - 1)
+      }
+      if (budget-- <= 0) return null
+      if (this.wttLowerBound(x, y, a, b) >= -G) return null
+      if (depth <= 0 || b - a < 1e-10) return null
+      const m = 0.5 * (a + b)
+      const wm = this.accelAt(x, y, m)
+      if (wm < -G) return search(a, m, wa, wm, depth - 1)
+      return search(a, m, wa, wm, depth - 1) ?? search(m, b, wm, wb, depth - 1)
+    }
+    return search(ta, tb, wa0, wb0, 10)
+  }
+
   /** Pre-M6-4A surfAt, kept verbatim as the comparison reference. */
   surfAtReference(x: number, y: number, tau: number, out: Float64Array): void {
     const seg = this.seg
@@ -762,7 +922,10 @@ export class TransientPlate {
       const [q1, qd1] = this.advanceState(q, qd, t, t + dt)
       const h = dt
       let fpk = 0
-      if (this.accelMode === 'ode') {
+      // Match the implemented acceleration definition per segment
+      // (tiny segments use the ODE form even in 'hermite' mode).
+      const odeSeg = this.accelMode === 'ode' || h < 1e-7
+      if (odeSeg) {
         const ts0 = t - this.epoch; const ts1 = t + dt - this.epoch
         for (const e of this.signal.score.events) {
           if (e.start_s <= ts1 && e.end_s >= ts0) fpk = Math.max(fpk, Math.abs(e.forcePeak_N))
@@ -773,7 +936,7 @@ export class TransientPlate {
         if (r[0] < qMin[j]) qMin[j] = r[0]
         if (r[1] > qMax[j]) qMax[j] = r[1]
         let lo: number; let hi: number
-        if (this.accelMode === 'ode') {
+        if (odeSeg) {
           const rd = hermiteQdRange(q[j], qd[j], q1[j], qd1[j], h)
           const w = this.omega[j]
           const dAbs = Math.abs(this.phiDrive[j] / this.mass[j]) * fpk
