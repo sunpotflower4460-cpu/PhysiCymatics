@@ -24,6 +24,21 @@ export type DetachSearchResult =
   | { kind: 'none' }
   | { kind: 'unknown' }
 
+/** M6-12 step-boundary plate checkpoint (structured-cloneable). */
+export interface PlateCheckpoint {
+  t: number; epoch: number
+  driveXY: [number, number]
+  accelMode: 'hermite' | 'ode'
+  scoreKey: string
+  q: Float64Array; qd: Float64Array
+  seg: {
+    t0: number; t1: number
+    q0: Float64Array; qd0: Float64Array
+    q1: Float64Array; qd1: Float64Array
+  } | null
+  counters: [number, number, number]
+}
+
 export class TransientPlate {
   readonly a = BD.a_m
   readonly zeta = BD.zeta
@@ -366,11 +381,19 @@ export class TransientPlate {
   }
 
   beginStep(t0: number, t1: number): void {
-    const n = this.ndof
     const q0 = Float64Array.from(this.q); const qd0 = Float64Array.from(this.qd)
     const [q, qd] = this.advanceState(q0, qd0, t0, t1)
     this.q = q; this.qd = qd; this.t = t1
     this.seg = { t0, t1, q0, qd0, q1: Float64Array.from(q), qd1: Float64Array.from(qd) }
+    this.finalizeSegment()
+  }
+
+  /** Derived per-segment state (height bound, tau-cache invalidation,
+   *  live mask, exact q ranges). Shared by beginStep and checkpoint
+   *  restore so both build identical derived state from the endpoints. */
+  private finalizeSegment(): void {
+    const n = this.ndof
+    const { t0, t1, q0, qd0, q1: q, qd1: qd } = this.seg!
     // Conservative |h| bound over the segment (see Python plate_transient).
     // Hermite tangent basis max is 4/27 (at s=1/3), not 0.105.
     let hb = 0
@@ -398,6 +421,58 @@ export class TransientPlate {
       const wden = 1e-12 * (1 + Math.abs(r[0]) + Math.abs(r[1]))
       this.segQMin[j] = r[0] - wden; this.segQMax[j] = r[1] + wden
     }
+  }
+
+  /** M6-12: full plate state at a step boundary (between steps, i.e.
+   *  after a completed beginStep-driven step). Restoring into a plate
+   *  built with the same score/drive reproduces the exact state:
+   *  q/qd, epoch, drive, accel mode, and the last segment with all
+   *  derived state rebuilt by finalizeSegment (no re-integration, so
+   *  a score/frequency switch applied at the boundary is preserved). */
+  checkpointPlate(): PlateCheckpoint {
+    const seg = this.seg
+    return {
+      t: this.t, epoch: this.epoch,
+      driveXY: [this.driveXY[0], this.driveXY[1]],
+      accelMode: this._accelMode,
+      scoreKey: JSON.stringify(this.signal.score),
+      q: Float64Array.from(this.q), qd: Float64Array.from(this.qd),
+      seg: seg ? {
+        t0: seg.t0, t1: seg.t1,
+        q0: Float64Array.from(seg.q0), qd0: Float64Array.from(seg.qd0),
+        q1: Float64Array.from(seg.q1), qd1: Float64Array.from(seg.qd1),
+      } : null,
+      counters: [this.surfCalls, this.heightCalls, this.heightAccelCalls],
+    }
+  }
+
+  restorePlate(cp: PlateCheckpoint): void {
+    if (cp.q.length !== this.ndof) throw new Error('checkpoint ndof mismatch')
+    if (cp.scoreKey !== JSON.stringify(this.signal.score)) {
+      throw new Error('checkpoint score mismatch: restore target must use the same score')
+    }
+    this.epoch = cp.epoch
+    this.t = cp.t
+    this.setDrive(cp.driveXY[0], cp.driveXY[1])
+    this.q = Float64Array.from(cp.q); this.qd = Float64Array.from(cp.qd)
+    this.sliceCache = null
+    if (cp.seg) {
+      this.seg = {
+        t0: cp.seg.t0, t1: cp.seg.t1,
+        q0: Float64Array.from(cp.seg.q0), qd0: Float64Array.from(cp.seg.qd0),
+        q1: Float64Array.from(cp.seg.q1), qd1: Float64Array.from(cp.seg.qd1),
+      }
+      this.finalizeSegment()
+    } else {
+      this.seg = null
+      this.tauSlotTau.fill(NaN); this.tauSlotTauQ.fill(NaN); this.tauSlotTauQH.fill(NaN)
+    }
+    // Set the mode last via the public setter: it invalidates tau
+    // caches and rebuilds the live mask for the restored segment
+    // (finalizeSegment already built it under the previous mode;
+    // the setter is a no-op when the mode already matches).
+    this.accelMode = cp.accelMode
+    this.surfCalls = cp.counters[0]; this.heightCalls = cp.counters[1]; this.heightAccelCalls = cp.counters[2]
   }
 
   /** Exact per-DOF q range over the current segment (M6-5 local bound). */

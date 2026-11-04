@@ -5,7 +5,7 @@
 // exact detach root (wtt is linear in a Hermite segment), event cap fallback.
 // Detection floor: a dip entirely between adjacent samples can be missed.
 import { G } from './surface'
-import { TransientPlate } from './plateTransient'
+import { TransientPlate, type PlateCheckpoint } from './plateTransient'
 import { initialState, initialStateRange } from './sand'
 import { DEFAULT_PARAMS, type ParticleState, type SandParams } from './types'
 import type { PerformanceScore } from './sequence'
@@ -55,6 +55,146 @@ export interface SleepOptions {
    *  (instead of the whole-plate bound). Default off until adopted
    *  by measurement. Only meaningful when sleep is enabled. */
   localSleep?: boolean
+}
+
+/** M6-12 step-boundary sim checkpoint (structured-cloneable). */
+export interface SimCheckpoint {
+  version: 1
+  t: number
+  plate: PlateCheckpoint
+  x: Float64Array; y: Float64Array; z: Float64Array
+  vx: Float64Array; vy: Float64Array; vz: Float64Array
+  alive: Uint8Array; sitting: Uint8Array
+  sleeping: Uint8Array
+  wakeT: Float64Array; sleepT0: Float64Array; nextEvalT: Float64Array
+  activeList: Int32Array; activePos: Int32Array; activeCount: number
+  heapT: Float64Array; heapI: Int32Array; heapSize: number; sleepingNow: number
+  stepSeq: number; contactSamples: number
+  lookCache: {
+    end: number
+    qMin: Float64Array; qMax: Float64Array
+    aMin: Float64Array; aMax: Float64Array
+  } | null
+  cellLbLinked: boolean; cellHWinLinked: boolean
+  cellLb: Float64Array | null; cellLbHi: Float64Array | null
+  cellHWin: Float64Array | null
+  cellHMax: Float64Array | null; cellHStamp: Int32Array | null
+  cellHMaxK: Float64Array | null; cellHStampK: Int32Array | null
+  counters: Record<string, number | null>
+}
+
+type AnyTyped = Float64Array | Int32Array | Uint8Array | Uint32Array
+
+/** Binary form of a checkpoint for study files: JSON header, then the
+ *  raw bytes of every typed array in canonical order (native endian;
+ *  intended for same-machine write/read in research scripts). */
+export function checkpointToBytes(cp: SimCheckpoint): Uint8Array {
+  const sections: { name: string; kind: string; arr: AnyTyped }[] = []
+  const push = (name: string, arr: AnyTyped | null) => {
+    if (arr) sections.push({ name, kind: arr.constructor.name, arr })
+  }
+  push('plate.q', cp.plate.q); push('plate.qd', cp.plate.qd)
+  if (cp.plate.seg) {
+    push('plate.seg.q0', cp.plate.seg.q0); push('plate.seg.qd0', cp.plate.seg.qd0)
+    push('plate.seg.q1', cp.plate.seg.q1); push('plate.seg.qd1', cp.plate.seg.qd1)
+  }
+  push('x', cp.x); push('y', cp.y); push('z', cp.z)
+  push('vx', cp.vx); push('vy', cp.vy); push('vz', cp.vz)
+  push('alive', cp.alive); push('sitting', cp.sitting); push('sleeping', cp.sleeping)
+  push('wakeT', cp.wakeT); push('sleepT0', cp.sleepT0); push('nextEvalT', cp.nextEvalT)
+  push('activeList', cp.activeList); push('activePos', cp.activePos)
+  push('heapT', cp.heapT); push('heapI', cp.heapI)
+  if (cp.lookCache) {
+    push('look.qMin', cp.lookCache.qMin); push('look.qMax', cp.lookCache.qMax)
+    push('look.aMin', cp.lookCache.aMin); push('look.aMax', cp.lookCache.aMax)
+  }
+  push('cellLb', cp.cellLb); push('cellLbHi', cp.cellLbHi); push('cellHWin', cp.cellHWin)
+  push('cellHMax', cp.cellHMax); push('cellHStamp', cp.cellHStamp)
+  push('cellHMaxK', cp.cellHMaxK); push('cellHStampK', cp.cellHStampK)
+  const header = {
+    version: cp.version, t: cp.t, activeCount: cp.activeCount,
+    heapSize: cp.heapSize, sleepingNow: cp.sleepingNow,
+    stepSeq: cp.stepSeq, contactSamples: cp.contactSamples,
+    cellLbLinked: cp.cellLbLinked, cellHWinLinked: cp.cellHWinLinked,
+    counters: cp.counters,
+    plate: {
+      t: cp.plate.t, epoch: cp.plate.epoch, driveXY: cp.plate.driveXY,
+      accelMode: cp.plate.accelMode, scoreKey: cp.plate.scoreKey,
+      seg: cp.plate.seg ? { t0: cp.plate.seg.t0, t1: cp.plate.seg.t1 } : null,
+      counters: cp.plate.counters,
+    },
+    lookEnd: cp.lookCache ? cp.lookCache.end : null,
+    sections: sections.map((s) => ({ name: s.name, kind: s.kind, length: s.arr.length })),
+  }
+  const headerBytes = new TextEncoder().encode(JSON.stringify(header))
+  let total = 4 + headerBytes.length
+  for (const s of sections) total += s.arr.byteLength
+  const out = new Uint8Array(total)
+  new DataView(out.buffer).setUint32(0, headerBytes.length, true)
+  out.set(headerBytes, 4)
+  let off = 4 + headerBytes.length
+  for (const s of sections) {
+    out.set(new Uint8Array(s.arr.buffer, s.arr.byteOffset, s.arr.byteLength), off)
+    off += s.arr.byteLength
+  }
+  return out
+}
+
+export function checkpointFromBytes(bytes: Uint8Array): SimCheckpoint {
+  const hlen = new DataView(bytes.buffer, bytes.byteOffset).getUint32(0, true)
+  const header = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + hlen)))
+  let off = 4 + hlen
+  const got = new Map<string, AnyTyped>()
+  for (const s of header.sections as { name: string; kind: string; length: number }[]) {
+    if (s.kind === 'Float64Array') {
+      got.set(s.name, new Float64Array(bytes.buffer.slice(bytes.byteOffset + off, bytes.byteOffset + off + s.length * 8)))
+      off += s.length * 8
+    } else if (s.kind === 'Int32Array' || s.kind === 'Uint32Array') {
+      const buf = bytes.buffer.slice(bytes.byteOffset + off, bytes.byteOffset + off + s.length * 4)
+      got.set(s.name, s.kind === 'Int32Array' ? new Int32Array(buf) : new Uint32Array(buf))
+      off += s.length * 4
+    } else {
+      got.set(s.name, new Uint8Array(bytes.buffer.slice(bytes.byteOffset + off, bytes.byteOffset + off + s.length)))
+      off += s.length
+    }
+  }
+  const f = (n: string) => got.get(n) as Float64Array
+  const fn = (n: string) => (got.has(n) ? (got.get(n) as Float64Array) : null)
+  const i32n = (n: string) => (got.has(n) ? (got.get(n) as Int32Array) : null)
+  const hp = header.plate
+  return {
+    version: 1, t: header.t,
+    plate: {
+      t: hp.t, epoch: hp.epoch, driveXY: hp.driveXY, accelMode: hp.accelMode,
+      scoreKey: hp.scoreKey, q: f('plate.q'), qd: f('plate.qd'),
+      seg: hp.seg ? {
+        t0: hp.seg.t0, t1: hp.seg.t1,
+        q0: f('plate.seg.q0'), qd0: f('plate.seg.qd0'),
+        q1: f('plate.seg.q1'), qd1: f('plate.seg.qd1'),
+      } : null,
+      counters: hp.counters,
+    },
+    x: f('x'), y: f('y'), z: f('z'), vx: f('vx'), vy: f('vy'), vz: f('vz'),
+    alive: got.get('alive') as Uint8Array, sitting: got.get('sitting') as Uint8Array,
+    sleeping: got.get('sleeping') as Uint8Array,
+    wakeT: f('wakeT'), sleepT0: f('sleepT0'), nextEvalT: f('nextEvalT'),
+    activeList: got.get('activeList') as Int32Array,
+    activePos: got.get('activePos') as Int32Array,
+    activeCount: header.activeCount,
+    heapT: f('heapT'), heapI: got.get('heapI') as Int32Array,
+    heapSize: header.heapSize, sleepingNow: header.sleepingNow,
+    stepSeq: header.stepSeq, contactSamples: header.contactSamples,
+    lookCache: header.lookEnd !== null ? {
+      end: header.lookEnd,
+      qMin: f('look.qMin'), qMax: f('look.qMax'),
+      aMin: f('look.aMin'), aMax: f('look.aMax'),
+    } : null,
+    cellLbLinked: header.cellLbLinked, cellHWinLinked: header.cellHWinLinked,
+    cellLb: fn('cellLb'), cellLbHi: fn('cellLbHi'), cellHWin: fn('cellHWin'),
+    cellHMax: fn('cellHMax'), cellHStamp: i32n('cellHStamp'),
+    cellHMaxK: fn('cellHMaxK'), cellHStampK: i32n('cellHStampK'),
+    counters: header.counters,
+  }
 }
 
 export class TransientSandSim {
@@ -430,6 +570,99 @@ export class TransientSandSim {
       this.activePos[i] = -1
       if (st.alive[i]) this.addActive(i)
     }
+  }
+
+  /** M6-12: save the full simulation state at a canonical step
+   *  boundary (call only between step() calls; throws mid-step).
+   *  Restoring into a sim constructed identically (same score, drive,
+   *  params, sleep options, particle count/ids) and continuing with
+   *  step() reproduces the uninterrupted run bitwise. The physics
+   *  uses no RNG after initialization, so no RNG state exists here.
+   *  Region Phi-range tables are construction-time constants and are
+   *  not serialized. */
+  checkpoint(): SimCheckpoint {
+    if (this.plate.t !== this.t) {
+      throw new Error('checkpoint is only valid at a step boundary (plate.t !== sim.t)')
+    }
+    const st = this.state
+    const lc = this.lookCache
+    return {
+      version: 1,
+      t: this.t,
+      plate: this.plate.checkpointPlate(),
+      x: Float64Array.from(st.x), y: Float64Array.from(st.y), z: Float64Array.from(st.z),
+      vx: Float64Array.from(st.vx), vy: Float64Array.from(st.vy), vz: Float64Array.from(st.vz),
+      alive: Uint8Array.from(st.alive), sitting: Uint8Array.from(st.sitting),
+      sleeping: Uint8Array.from(this.sleeping),
+      wakeT: Float64Array.from(this.wakeT),
+      sleepT0: Float64Array.from(this.sleepT0),
+      nextEvalT: Float64Array.from(this.nextEvalT),
+      activeList: Int32Array.from(this.activeList),
+      activePos: Int32Array.from(this.activePos),
+      activeCount: this.activeCount,
+      heapT: Float64Array.from(this.heapT), heapI: Int32Array.from(this.heapI),
+      heapSize: this.heapSize, sleepingNow: this.sleepingNow,
+      stepSeq: this.stepSeq, contactSamples: this.contactSamples,
+      lookCache: lc ? {
+        end: lc.end,
+        qMin: Float64Array.from(lc.qMin), qMax: Float64Array.from(lc.qMax),
+        aMin: Float64Array.from(lc.aMin), aMax: Float64Array.from(lc.aMax),
+      } : null,
+      cellLbLinked: this.cellLbFor !== null && this.cellLbFor === lc,
+      cellHWinLinked: this.cellHWinFor !== null && this.cellHWinFor === lc,
+      cellLb: this.cellLb ? Float64Array.from(this.cellLb) : null,
+      cellLbHi: this.cellLbHi ? Float64Array.from(this.cellLbHi) : null,
+      cellHWin: this.cellHWin ? Float64Array.from(this.cellHWin) : null,
+      cellHMax: this.cellHMax ? Float64Array.from(this.cellHMax) : null,
+      cellHStamp: this.cellHStamp ? Int32Array.from(this.cellHStamp) : null,
+      cellHMaxK: this.cellHMaxK ? Float64Array.from(this.cellHMaxK) : null,
+      cellHStampK: this.cellHStampK ? Int32Array.from(this.cellHStampK) : null,
+      counters: {
+        nBounce: this.nBounce, nDetach: this.nDetach, nEventCap: this.nEventCap,
+        skippedUpdates: this.skippedUpdates, sleepEvaluations: this.sleepEvaluations,
+        wakeCount: this.wakeCount, lastDetachT: this.lastDetachT,
+        regionHits: this.regionHits, regionRejects: this.regionRejects, regionChecks: this.regionChecks,
+        flySegments: this.flySegments, globalSkips: this.globalSkips, localSkips: this.localSkips,
+        sampledSegments: this.sampledSegments, localSliceAttempts: this.localSliceAttempts,
+        localSliceSkips: this.localSliceSkips, localPieceChecks: this.localPieceChecks,
+        cellBoundComputations: this.cellBoundComputations, bisectIters: this.bisectIters,
+        sittingSteps: this.sittingSteps, localSleepWins: this.localSleepWins,
+      },
+    }
+  }
+
+  restore(cp: SimCheckpoint): void {
+    const st = this.state
+    if (cp.version !== 1) throw new Error(`unsupported checkpoint version ${cp.version}`)
+    if (cp.x.length !== st.id.length) throw new Error('checkpoint particle count mismatch')
+    this.plate.restorePlate(cp.plate)
+    this.t = cp.t
+    st.x.set(cp.x); st.y.set(cp.y); st.z.set(cp.z)
+    st.vx.set(cp.vx); st.vy.set(cp.vy); st.vz.set(cp.vz)
+    st.alive.set(cp.alive); st.sitting.set(cp.sitting)
+    this.sleeping.set(cp.sleeping); this.wakeT.set(cp.wakeT)
+    this.sleepT0.set(cp.sleepT0); this.nextEvalT.set(cp.nextEvalT)
+    this.activeList.set(cp.activeList); this.activePos.set(cp.activePos)
+    this.activeCount = cp.activeCount
+    if (this.heapT.length < cp.heapT.length) { this.heapT = new Float64Array(cp.heapT.length); this.heapI = new Int32Array(cp.heapI.length) }
+    this.heapT.set(cp.heapT); this.heapI.set(cp.heapI)
+    this.heapSize = cp.heapSize; this.sleepingNow = cp.sleepingNow
+    this.stepSeq = cp.stepSeq; this.contactSamples = cp.contactSamples
+    this.lookCache = cp.lookCache ? {
+      end: cp.lookCache.end,
+      qMin: Float64Array.from(cp.lookCache.qMin), qMax: Float64Array.from(cp.lookCache.qMax),
+      aMin: Float64Array.from(cp.lookCache.aMin), aMax: Float64Array.from(cp.lookCache.aMax),
+    } : null
+    if (cp.cellLb && this.cellLb) this.cellLb.set(cp.cellLb)
+    if (cp.cellLbHi && this.cellLbHi) this.cellLbHi.set(cp.cellLbHi)
+    if (cp.cellHWin && this.cellHWin) this.cellHWin.set(cp.cellHWin)
+    if (cp.cellHMax && this.cellHMax) this.cellHMax.set(cp.cellHMax)
+    if (cp.cellHStamp && this.cellHStamp) this.cellHStamp.set(cp.cellHStamp)
+    if (cp.cellHMaxK && this.cellHMaxK) this.cellHMaxK.set(cp.cellHMaxK)
+    if (cp.cellHStampK && this.cellHStampK) this.cellHStampK.set(cp.cellHStampK)
+    this.cellLbFor = cp.cellLbLinked ? this.lookCache : null
+    this.cellHWinFor = cp.cellHWinLinked ? this.lookCache : null
+    Object.assign(this, cp.counters)
   }
 
   private ensureLookahead(fromT: number): void {
