@@ -69,6 +69,38 @@ def _hermite_interp(md, rho):
     der = (d00*R[k] + d10*drho*dR[k] + d01*R[k+1] + d11*drho*dR[k+1]) / drho
     dd00 = 12*u - 6; dd10 = 6*u - 4; dd01 = -12*u + 6; dd11 = 6*u - 2
     dder = (dd00*R[k] + dd10*drho*dR[k] + dd01*R[k+1] + dd11*drho*dR[k+1]) / drho**2
+    # M6-14R: parity-respecting center interval R = rho^m P((rho/L)^2),
+    # mirroring TS radialInterp (plain cubic breaks cartesian
+    # smoothness at the origin for m >= 1).
+    m0 = k == 0
+    if np.any(m0):
+        m = md["m"]; L = drho
+        R0v, R1v, D0v, D1v = R[0], R[1], dR[0], dR[1]
+        if m == 0:
+            a = R0v; c2 = (L*D1v)/2 - (R1v-R0v); b = (R1v-R0v) - c2
+        elif m == 1:
+            a = D0v; S = R1v/L; c2 = (D1v-S)/2 - (S-a); b = (S-a) - c2
+        else:
+            c2 = 0.0; S = R1v/L**m; b = (D1v/L**(m-1) - m*S)/2; a = S-b
+        rho0 = np.clip(rho, 0.0, 1.0)[m0]
+        uu = (rho0/L)**2
+        P = a + b*uu + c2*uu**2
+        dP = (b + 2*c2*uu) * (2*rho0/L**2)
+        ddP = 2*c2*(2*rho0/L**2)**2 + (b + 2*c2*uu)*(2/L**2)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            rm = rho0**m
+            rm1 = np.where(m >= 1, rho0**np.maximum(m-1, 0), 0.0)
+            rm2 = np.where(m >= 2, rho0**np.maximum(m-2, 0), 0.0)
+            v0 = rm*P
+            d0v = m*rm1*P + rm*dP
+            dd0v = m*(m-1)*rm2*P + 2*m*rm1*dP + rm*ddP
+        at0 = rho0 == 0
+        if np.any(at0):
+            v0 = np.where(at0, a if m == 0 else 0.0, v0)
+            d0v = np.where(at0, a if m == 1 else 0.0, d0v)
+            dd0v = np.where(at0, (2*b/L**2) if m == 0 else (2*a if m == 2 else 0.0), dd0v)
+        val = np.array(val, dtype=float); der = np.array(der, dtype=float); dder = np.array(dder, dtype=float)
+        val[m0] = v0; der[m0] = d0v; dder[m0] = dd0v
     return val, der, dder
 
 

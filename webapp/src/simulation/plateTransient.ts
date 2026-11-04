@@ -109,6 +109,14 @@ export class TransientPlate {
    *  lookahead) must additionally be invalidated by the caller when
    *  switching mid-run (wakeAll + refreshForceBounds), exactly as for
    *  drive-condition changes. */
+  /** M6-14B research switch: 'consistent' reroutes the surface
+   *  evaluators (surfAt/heightAt/heightAtFused/heightAccelAt/
+   *  accelAt) to the geometrically consistent surface. Production
+   *  default 'bin'. Sleep / local non-contact proofs are NOT
+   *  re-derived for this geometry yet — callers must disable them
+   *  (see docs/m6_14_results.md). */
+  geometryMode: 'bin' | 'consistent' = 'bin'
+  private _geoScratch = new Float64Array(5)
   private _accelMode: 'hermite' | 'ode' = 'hermite'
   get accelMode(): 'hermite' | 'ode' { return this._accelMode }
   set accelMode(m: 'hermite' | 'ode') {
@@ -567,6 +575,7 @@ export class TransientPlate {
    *  modalCoeffs(), spatial weights use flattened tables and reused
    *  scratch. Arithmetic and summation order match surfAtReference. */
   surfAt(x: number, y: number, tau: number, out: Float64Array): void {
+    if (this.geometryMode === 'consistent') { this.surfAtConsistent(x, y, tau, out); return }
     this.surfCalls++
     const seg = this.seg
     if (!seg) { out.fill(0); return }
@@ -621,6 +630,44 @@ export class TransientPlate {
     // dRflat stores dR/drho / a; recover per-rho slopes.
     const D0 = this.dRflat[mi * stride + k] * this.a
     const D1 = this.dRflat[mi * stride + k + 1] * this.a
+    if (k === 0) {
+      // Center interval (M6-14R): a plain cubic in rho does not
+      // respect the polar parity R ~ rho^m * (even in rho), which
+      // makes the cartesian field non-smooth at the origin (e.g.
+      // m=1 Hessian undefined). Use R = rho^m * P(u), u=(rho/L)^2,
+      // P quadratic, matching nodal value/slope at L and the center
+      // condition for the mode's m. C1 with the next interval.
+      const m = this.modes[mi].m
+      const L = drho; const rho = u * L
+      let a: number; let b: number; let c2: number
+      if (m === 0) {
+        a = R0; c2 = (L * D1) / 2 - (R1 - R0); b = (R1 - R0) - c2
+      } else if (m === 1) {
+        a = D0; const S = R1 / L
+        c2 = (D1 - S) / 2 - (S - a); b = (S - a) - c2
+      } else {
+        c2 = 0; const S = R1 / Math.pow(L, m)
+        b = (D1 / Math.pow(L, m - 1) - m * S) / 2; a = S - b
+      }
+      const uu = (rho / L) * (rho / L)
+      const P = a + b * uu + c2 * uu * uu
+      const dP = (b + 2 * c2 * uu) * (2 * rho / (L * L))
+      const ddP = 2 * c2 * (2 * rho / (L * L)) * (2 * rho / (L * L))
+        + (b + 2 * c2 * uu) * (2 / (L * L))
+      if (rho === 0) {
+        out[0] = m === 0 ? a : 0
+        out[1] = m === 1 ? a : 0
+        out[2] = m === 0 ? 2 * b / (L * L) : m === 2 ? 2 * a : 0
+        return
+      }
+      const rm = Math.pow(rho, m)
+      const rm1 = m >= 1 ? Math.pow(rho, m - 1) : 0
+      const rm2 = m >= 2 ? Math.pow(rho, m - 2) : 0
+      out[0] = rm * P
+      out[1] = m * rm1 * P + rm * dP
+      out[2] = m * (m - 1) * rm2 * P + 2 * m * rm1 * dP + rm * ddP
+      return
+    }
     const u2 = u * u; const u3 = u2 * u
     const h00 = 2 * u3 - 3 * u2 + 1; const h10 = u3 - 2 * u2 + u
     const h01 = -2 * u3 + 3 * u2; const h11 = u3 - u2
@@ -638,11 +685,121 @@ export class TransientPlate {
    *  only the spatial shape evaluation differs, so differences vs
    *  surfAt isolate the geometry representation. out = same layout
    *  as surfAt [h, hx, hy, wt, wtt]. */
+  private _phiMaxConsistent: Float64Array | null = null
+  /** M6-14B: conservative per-mode max |Rhat(rho)| for the
+   *  consistent interpolant. Hermite intervals use the Bernstein
+   *  control-polygon bound (max |control point| >= max |cubic|);
+   *  the parity center interval uses |rho^m P(u)| <= L^m(|a|+|b|+|c|).
+   *  This replaces the production |Phi|<=1 assumption, which the
+   *  interpolant violates slightly (measured max ~1.000004). */
+  phiMaxConsistent(): Float64Array {
+    if (this._phiMaxConsistent) return this._phiMaxConsistent
+    const stride = BD.ngrid; const n = this.ng1; const drho = 1 / n
+    const out = new Float64Array(this.modes.length)
+    const ri = new Float64Array(3)
+    for (let mi = 0; mi < this.modes.length; mi++) {
+      let mx = 0
+      for (let k = 0; k < n; k++) {
+        const R0 = this.Rflat[mi * stride + k]; const R1 = this.Rflat[mi * stride + k + 1]
+        const D0 = this.dRflat[mi * stride + k] * this.a
+        const D1 = this.dRflat[mi * stride + k + 1] * this.a
+        if (k === 0) {
+          // Triangle bound from the parity coefficients: recompute
+          // a,b,c exactly as radialInterp does.
+          const m = this.modes[mi].m; const L = drho
+          let a: number; let b: number; let c2: number
+          if (m === 0) { a = R0; c2 = (L * D1) / 2 - (R1 - R0); b = (R1 - R0) - c2 }
+          else if (m === 1) { a = D0; const S = R1 / L; c2 = (D1 - S) / 2 - (S - a); b = (S - a) - c2 }
+          else { c2 = 0; const S = R1 / Math.pow(L, m); b = (D1 / Math.pow(L, m - 1) - m * S) / 2; a = S - b }
+          mx = Math.max(mx, Math.pow(L, m) * (Math.abs(a) + Math.abs(b) + Math.abs(c2)))
+        } else {
+          const p1 = R0 + (drho * D0) / 3; const p2 = R1 - (drho * D1) / 3
+          mx = Math.max(mx, Math.abs(R0), Math.abs(p1), Math.abs(p2), Math.abs(R1))
+        }
+      }
+      // Rounding hair: bounds must never understate.
+      out[mi] = mx * (1 + 1e-12) + 1e-15
+      void ri
+    }
+    this._phiMaxConsistent = out
+    return out
+  }
+
+  /** M6-14B: conservative [min,max] of Rhat over rho in [rho0,rho1]
+   *  (single mode). Hermite sub-intervals: endpoints plus exact
+   *  derivative-root evaluations. The parity center interval falls
+   *  back to the symmetric triangle bound. Basis for a consistent
+   *  analogue of cellPhiRanges. */
+  radialRangeConsistent(mi: number, rho0: number, rho1: number, out: Float64Array): void {
+    const n = this.ng1; const drho = 1 / n
+    const ri = new Float64Array(3)
+    let lo = Infinity; let hi = -Infinity
+    const eat = (v: number) => { if (v < lo) lo = v; if (v > hi) hi = v }
+    const k0 = Math.max(0, Math.min(n - 1, Math.floor(rho0 * n)))
+    const k1 = Math.max(0, Math.min(n - 1, Math.floor(rho1 * n)))
+    for (let k = k0; k <= k1; k++) {
+      const a0 = Math.max(rho0, k * drho); const a1 = Math.min(rho1, (k + 1) * drho)
+      if (k === 0) {
+        const B = this.phiMaxConsistent()[mi]
+        eat(-B); eat(B)
+        this.radialInterp(mi, a1, ri); eat(ri[0])
+        continue
+      }
+      // Hermite cubic on this sub-interval: extrema where the
+      // derivative (quadratic in u) vanishes.
+      const stride = BD.ngrid
+      const R0 = this.Rflat[mi * stride + k]; const R1 = this.Rflat[mi * stride + k + 1]
+      const D0 = this.dRflat[mi * stride + k] * this.a
+      const D1 = this.dRflat[mi * stride + k + 1] * this.a
+      this.radialInterp(mi, a0, ri); eat(ri[0])
+      this.radialInterp(mi, a1, ri); eat(ri[0])
+      const A = 6 * (R0 - R1) + 3 * drho * (D0 + D1)
+      const Bq = -6 * R0 + 6 * R1 + drho * (-4 * D0 - 2 * D1)
+      const C = drho * D0
+      const roots: number[] = []
+      if (Math.abs(A) < 1e-300) { if (Bq !== 0) roots.push(-C / Bq) }
+      else {
+        const disc = Bq * Bq - 4 * A * C
+        if (disc >= 0) { const sq = Math.sqrt(disc); roots.push((-Bq - sq) / (2 * A), (-Bq + sq) / (2 * A)) }
+      }
+      for (const u of roots) {
+        const rho = (k + u) * drho
+        if (u > 0 && u < 1 && rho >= a0 && rho <= a1) {
+          this.radialInterp(mi, rho, ri); eat(ri[0])
+        }
+      }
+    }
+    out[0] = lo; out[1] = hi
+  }
+
   surfAtConsistent(x: number, y: number, tau: number, out: Float64Array): void {
     const seg = this.seg
     if (!seg) { out.fill(0); return }
     const base = this.modalCoeffs(tau)
     const r = Math.hypot(x, y)
+    if (r < 1e-12) {
+      // Exact center limits (M6-14R): m=0 contributes height only;
+      // m=1 contributes a finite gradient (dRho/drho at 0)/a along
+      // its angular direction; m>=2 contributes nothing.
+      const ri0 = new Float64Array(3)
+      let hh = 0; let hx = 0; let hy = 0; let uz = 0; let wtt = 0
+      let lastMode = -1; let R = 0; let dR = 0
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        if (mi !== lastMode) {
+          this.radialInterp(mi, 0, ri0)
+          R = ri0[0]; dR = ri0[1] / this.a
+          lastMode = mi
+        }
+        const q = this.tauQ[base + j]; const qd = this.tauQd[base + j]; const qdd = this.tauQdd[base + j]
+        if (m === 0) { hh += q * R; uz += qd * R; wtt += qdd * R }
+        else if (m === 1) {
+          if (this.dofCos[j]) hx += q * dR; else hy += q * dR
+        }
+      }
+      out[0] = hh; out[1] = hx; out[2] = hy; out[3] = uz; out[4] = wtt
+      return
+    }
     const rs = r < 1e-12 ? 1e-12 : r
     const c = x / rs; const sn = y / rs
     CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
@@ -690,6 +847,33 @@ export class TransientPlate {
     if (!seg) return
     const base = this.modalCoeffs(tau)
     const r = Math.hypot(x, y)
+    if (r < 1e-12) {
+      // Exact center limits (M6-14R): m=0 -> isotropic Hessian
+      // ddR*I; m=1 -> finite gradient, zero Hessian; m=2 -> finite
+      // traceless Hessian (ddR on the cos/sin axes); m>=3 -> zero.
+      const ri0 = new Float64Array(3)
+      let lastMode = -1; let R = 0; let dR = 0; let ddR = 0
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        if (mi !== lastMode) {
+          this.radialInterp(mi, 0, ri0)
+          R = ri0[0]; dR = ri0[1] / this.a; ddR = ri0[2] / (this.a * this.a)
+          lastMode = mi
+        }
+        const q = this.tauQ[base + j]; const qd = this.tauQd[base + j]; const qdd = this.tauQdd[base + j]
+        if (m === 0) {
+          out.h += q * R; out.ht += qd * R; out.htt += qdd * R
+          out.hxx += q * ddR; out.hyy += q * ddR
+        } else if (m === 1) {
+          if (this.dofCos[j] === 1) { out.hx += q * dR; out.htx += qd * dR }
+          else { out.hy += q * dR; out.hty += qd * dR }
+        } else if (m === 2) {
+          if (this.dofCos[j] === 1) { out.hxx += q * ddR; out.hyy -= q * ddR }
+          else out.hxy += q * ddR
+        }
+      }
+      return
+    }
     const rs = r < 1e-9 ? 1e-9 : r
     const c = x / rs; const sn = y / rs
     CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
@@ -765,6 +949,7 @@ export class TransientPlate {
    *  Used where only the height is compared (contact sampling and
    *  bisection); the contact resolution itself still uses surfAt. */
   heightAt(x: number, y: number, tau: number): number {
+    if (this.geometryMode === 'consistent') { this.surfAtConsistent(x, y, tau, this._geoScratch); return this._geoScratch[0] }
     this.heightCalls++
     const seg = this.seg
     if (!seg) return 0
@@ -847,6 +1032,11 @@ export class TransientPlate {
    *  surfAt's out[0] and out[4] (same W, same summation order).
    *  Used by the sitting detach check, which needs exactly these two. */
   heightAccelAt(x: number, y: number, tau: number, out2: Float64Array): void {
+    if (this.geometryMode === 'consistent') {
+      this.surfAtConsistent(x, y, tau, this._geoScratch)
+      out2[0] = this._geoScratch[0]; out2[1] = this._geoScratch[4]
+      return
+    }
     this.heightAccelCalls++
     if (!this.seg) { out2[0] = 0; out2[1] = 0; return }
     const base = this.modalCoeffsQH(tau)
@@ -871,6 +1061,7 @@ export class TransientPlate {
    *  cache cannot hit. Sample evaluations keep using heightAt so
    *  shared sample taus still hit the cache. */
   heightAtFused(x: number, y: number, tau: number): number {
+    if (this.geometryMode === 'consistent') { this.surfAtConsistent(x, y, tau, this._geoScratch); return this._geoScratch[0] }
     this.heightCalls++
     const seg = this.seg
     if (!seg) return 0
@@ -895,6 +1086,7 @@ export class TransientPlate {
 
   /** wtt at (x, y, tau) only (M6-7C): bitwise identical to surfAt's out[4]. */
   accelAt(x: number, y: number, tau: number): number {
+    if (this.geometryMode === 'consistent') { this.surfAtConsistent(x, y, tau, this._geoScratch); return this._geoScratch[4] }
     this.heightAccelCalls++
     if (!this.seg) return 0
     const base = this.modalCoeffsQH(tau)

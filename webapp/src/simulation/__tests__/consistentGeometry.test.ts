@@ -113,3 +113,114 @@ describe('M6-14 consistent geometry', () => {
     expect(maxDg).toBeGreaterThan(1e-4)
   })
 })
+
+describe('M6-14R center limits', () => {
+  it('field at exact center is the directional limit', () => {
+    const plate = excited()
+    const mk = () => ({ h: 0, hx: 0, hy: 0, hxx: 0, hxy: 0, hyy: 0, ht: 0, htt: 0, htx: 0, hty: 0 })
+    const c0 = mk()
+    plate.surfaceFieldConsistent(0, 0, TAU, c0)
+    for (const v of Object.values(c0)) expect(Number.isFinite(v)).toBe(true)
+    // Hessian must not be identically zero for an excited plate
+    // (m=0 isotropic curvature was dropped before the fix).
+    expect(Math.abs(c0.hxx) + Math.abs(c0.hyy) + Math.abs(c0.hxy)).toBeGreaterThan(0)
+    for (const ang of [0, 0.7, 2.1, -1.3]) {
+      let prev: Record<string, number> | null = null
+      for (const rr of [1e-3, 1e-4, 1e-5, 1e-6]) {
+        const f = mk()
+        plate.surfaceFieldConsistent(rr * Math.cos(ang), rr * Math.sin(ang), TAU, f)
+        if (prev) {
+          // Each halving-decade must move closer to (or stay at) the
+          // center values: check the smallest radius against center.
+          if (rr === 1e-6) {
+            expect(Math.abs(f.h - c0.h)).toBeLessThan(1e-7)
+            expect(Math.abs(f.hx - c0.hx)).toBeLessThan(5e-2)
+            expect(Math.abs(f.hy - c0.hy)).toBeLessThan(5e-2)
+            expect(Math.abs(f.hxx - c0.hxx)).toBeLessThan(2)
+            expect(Math.abs(f.hyy - c0.hyy)).toBeLessThan(2)
+            expect(Math.abs(f.hxy - c0.hxy)).toBeLessThan(2)
+          }
+        }
+        prev = f as unknown as Record<string, number>
+      }
+    }
+  })
+
+  it('surfAtConsistent center gradient matches field center', () => {
+    const plate = excited()
+    const o = new Float64Array(5)
+    plate.surfAtConsistent(0, 0, TAU, o)
+    const f = { h: 0, hx: 0, hy: 0, hxx: 0, hxy: 0, hyy: 0, ht: 0, htt: 0, htx: 0, hty: 0 }
+    plate.surfaceFieldConsistent(0, 0, TAU, f)
+    expect(o[0]).toBe(f.h); expect(o[1]).toBe(f.hx); expect(o[2]).toBe(f.hy)
+    expect(o[3]).toBe(f.ht); expect(o[4]).toBe(f.htt)
+  })
+
+  it('first radial interval is C1 at the first node', () => {
+    const plate = excited()
+    const out = new Float64Array(3)
+    const R = (plate as unknown as { R: Float64Array[] }).R
+    for (let mi = 0; mi < R.length; mi++) {
+      plate.radialInterp(mi, 1 / 511 - 1e-9, out)
+      const vL = out[0]; const dL = out[1]
+      plate.radialInterp(mi, 1 / 511 + 1e-9, out)
+      expect(Math.abs(out[0] - vL)).toBeLessThan(1e-6)
+      expect(Math.abs(out[1] - dL)).toBeLessThan(1e-3)
+    }
+  })
+})
+
+describe('M6-14B consistent bounds', () => {
+  it('phiMaxConsistent bounds dense sampling and is tight', () => {
+    const plate = excited()
+    const B = plate.phiMaxConsistent()
+    const ri = new Float64Array(3)
+    let worstRatio = 0
+    for (let mi = 0; mi < B.length; mi++) {
+      let sampled = 0
+      for (let i = 0; i <= 20000; i++) {
+        plate.radialInterp(mi, i / 20000, ri)
+        sampled = Math.max(sampled, Math.abs(ri[0]))
+      }
+      expect(B[mi]).toBeGreaterThanOrEqual(sampled)
+      worstRatio = Math.max(worstRatio, B[mi] / Math.max(sampled, 1e-300))
+    }
+    // Bernstein bounds are conservative but must stay usable.
+    expect(worstRatio).toBeLessThan(1.05)
+    expect(Math.max(...B)).toBeGreaterThan(1) // |Phi|<=1 indeed fails
+    expect(Math.max(...B)).toBeLessThan(1.01)
+  })
+
+  it('radialRangeConsistent contains dense sampling', () => {
+    const plate = excited()
+    const ri = new Float64Array(3); const rg = new Float64Array(2)
+    let seed = 99
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff }
+    for (let trial = 0; trial < 60; trial++) {
+      const mi = (rnd() * plate.phiMaxConsistent().length) | 0
+      const a0 = rnd() * 0.9; const a1 = a0 + 0.02 + rnd() * 0.08
+      plate.radialRangeConsistent(mi, a0, Math.min(a1, 1), rg)
+      for (let i = 0; i <= 400; i++) {
+        const rho = a0 + (Math.min(a1, 1) - a0) * (i / 400)
+        plate.radialInterp(mi, rho, ri)
+        expect(ri[0]).toBeGreaterThanOrEqual(rg[0] - 1e-12)
+        expect(ri[0]).toBeLessThanOrEqual(rg[1] + 1e-12)
+      }
+    }
+  })
+
+  it('geometryMode routing matches direct consistent evaluators', () => {
+    const plate = excited()
+    plate.geometryMode = 'consistent'
+    const o1 = new Float64Array(5); const o2 = new Float64Array(5)
+    plate.surfAt(0.03, -0.04, TAU, o1)
+    plate.surfAtConsistent(0.03, -0.04, TAU, o2)
+    for (let i = 0; i < 5; i++) expect(o1[i]).toBe(o2[i])
+    expect(plate.heightAt(0.03, -0.04, TAU)).toBe(o2[0])
+    expect(plate.heightAtFused(0.03, -0.04, TAU)).toBe(o2[0])
+    expect(plate.accelAt(0.03, -0.04, TAU)).toBe(o2[4])
+    const ha = new Float64Array(2)
+    plate.heightAccelAt(0.03, -0.04, TAU, ha)
+    expect(ha[0]).toBe(o2[0]); expect(ha[1]).toBe(o2[4])
+  })
+})
