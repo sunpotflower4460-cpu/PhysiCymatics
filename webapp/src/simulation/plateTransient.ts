@@ -4,6 +4,7 @@
 // cubic-Hermite state evaluation inside a sand step.
 import basisData from '../data/plate_modes_transient.json'
 import { ScoreSignal, type PerformanceScore, type DriveEvent } from './sequence'
+import type { SurfaceField } from './seatedFriction'
 import { G } from './surface'
 
 interface ModeRow { m: number; root_idx: number; f_hz: number; M_kg: number; R: number[]; dR_drho: number[] }
@@ -598,6 +599,138 @@ export class TransientPlate {
       hh += q * W; hx += q * Wx; hy += q * Wy; uz += qd * W; wtt += qdd * W
     }
     out[0] = hh; out[1] = hx; out[2] = hy; out[3] = uz; out[4] = wtt
+  }
+
+  /** M6-14 RESEARCH ONLY (not used by the sim): cubic Hermite radial
+   *  interpolation on the nodal grid. The tables R[k], dR[k] are nodal
+   *  values/slopes at rho_k = k/ng1 (sand_bounce.make_mode samples
+   *  linspace(0,1,ngrid)); the production path instead treats them as
+   *  piecewise-constant bins. Returns [R, dR/drho, d2R/drho2] of the
+   *  interpolant — C1 continuous, gradient exactly its own derivative.
+   *  Python evaluation vs the analytic Bessel eigenfunction:
+   *  max |dR| error ~1e-10 vs ~1e-2 for the bin scheme
+   *  (tests/test_m6_14_geometry.py). */
+  radialInterp(mi: number, rho: number, out: Float64Array): void {
+    const stride = BD.ngrid
+    const n = this.ng1
+    const x = Math.min(Math.max(rho, 0), 1) * n
+    const k = Math.min(x | 0, n - 1)
+    const u = x - k
+    const drho = 1 / n
+    const R0 = this.Rflat[mi * stride + k]; const R1 = this.Rflat[mi * stride + k + 1]
+    // dRflat stores dR/drho / a; recover per-rho slopes.
+    const D0 = this.dRflat[mi * stride + k] * this.a
+    const D1 = this.dRflat[mi * stride + k + 1] * this.a
+    const u2 = u * u; const u3 = u2 * u
+    const h00 = 2 * u3 - 3 * u2 + 1; const h10 = u3 - 2 * u2 + u
+    const h01 = -2 * u3 + 3 * u2; const h11 = u3 - u2
+    out[0] = h00 * R0 + h10 * drho * D0 + h01 * R1 + h11 * drho * D1
+    const d00 = 6 * u2 - 6 * u; const d10 = 3 * u2 - 4 * u + 1
+    const d01 = -6 * u2 + 6 * u; const d11 = 3 * u2 - 2 * u
+    out[1] = (d00 * R0 + d10 * drho * D0 + d01 * R1 + d11 * drho * D1) / drho
+    const dd00 = 12 * u - 6; const dd10 = 6 * u - 4
+    const dd01 = -12 * u + 6; const dd11 = 6 * u - 2
+    out[2] = (dd00 * R0 + dd10 * drho * D0 + dd01 * R1 + dd11 * drho * D1) / (drho * drho)
+  }
+
+  /** M6-14 RESEARCH ONLY: surfAt with the geometrically consistent
+   *  radial interpolation. Same modal time coefficients as surfAt;
+   *  only the spatial shape evaluation differs, so differences vs
+   *  surfAt isolate the geometry representation. out = same layout
+   *  as surfAt [h, hx, hy, wt, wtt]. */
+  surfAtConsistent(x: number, y: number, tau: number, out: Float64Array): void {
+    const seg = this.seg
+    if (!seg) { out.fill(0); return }
+    const base = this.modalCoeffs(tau)
+    const r = Math.hypot(x, y)
+    const rs = r < 1e-12 ? 1e-12 : r
+    const c = x / rs; const sn = y / rs
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
+    for (let m = 2; m <= 4; m++) {
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
+    }
+    const ri = new Float64Array(3)
+    let hh = 0; let hx = 0; let hy = 0; let uz = 0; let wtt = 0
+    let lastMode = -1; let R = 0; let dR = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const mi = this.dofMode[j]; const m = this.dofM[j]
+      if (mi !== lastMode) {
+        this.radialInterp(mi, r / this.a, ri)
+        R = ri[0]; dR = ri[1] / this.a
+        lastMode = mi
+      }
+      let W: number; let Wx: number; let Wy: number
+      if (m === 0) {
+        W = R; Wx = dR * c; Wy = dR * sn
+      } else {
+        const cm = CM[m]; const sm = SM[m]
+        let Wr: number; let Wt: number
+        if (this.dofCos[j]) { W = R * cm; Wr = dR * cm; Wt = (-m * R * sm) / rs }
+        else { W = R * sm; Wr = dR * sm; Wt = (m * R * cm) / rs }
+        Wx = Wr * c - Wt * sn; Wy = Wr * sn + Wt * c
+      }
+      const q = this.tauQ[base + j]; const qd = this.tauQd[base + j]; const qdd = this.tauQdd[base + j]
+      hh += q * W; hx += q * Wx; hy += q * Wy; uz += qd * W; wtt += qdd * W
+    }
+    out[0] = hh; out[1] = hx; out[2] = hy; out[3] = uz; out[4] = wtt
+  }
+
+  /** M6-14 RESEARCH ONLY: full consistent surface field (height,
+   *  gradient, Hessian, time derivatives) from the same interpolated
+   *  height — the input shape seatedFriction expects. Hessian via
+   *  polar orthonormal components rotated to cartesian. At r ~ 0 the
+   *  polar formulas use the guarded radius (finite limits exist for
+   *  every mode order; exact-center values are accurate for m=0 and
+   *  approximate within O(r_guard) for m>0). */
+  surfaceFieldConsistent(x: number, y: number, tau: number, out: SurfaceField): void {
+    const seg = this.seg
+    out.h = 0; out.hx = 0; out.hy = 0; out.hxx = 0; out.hxy = 0; out.hyy = 0
+    out.ht = 0; out.htt = 0; out.htx = 0; out.hty = 0
+    if (!seg) return
+    const base = this.modalCoeffs(tau)
+    const r = Math.hypot(x, y)
+    const rs = r < 1e-9 ? 1e-9 : r
+    const c = x / rs; const sn = y / rs
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
+    for (let m = 2; m <= 4; m++) {
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
+    }
+    const ri = new Float64Array(3)
+    let lastMode = -1; let R = 0; let dR = 0; let ddR = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const mi = this.dofMode[j]; const m = this.dofM[j]
+      if (mi !== lastMode) {
+        this.radialInterp(mi, rs / this.a, ri)
+        R = ri[0]; dR = ri[1] / this.a; ddR = ri[2] / (this.a * this.a)
+        lastMode = mi
+      }
+      const cm = m === 0 ? 1 : CM[m]; const sm = m === 0 ? 0 : SM[m]
+      const isCos = m === 0 || this.dofCos[j] === 1
+      const Th = m === 0 ? 1 : isCos ? cm : sm
+      const ThT = m === 0 ? 0 : isCos ? -m * sm : m * cm        // dTheta/dtheta
+      const ThTT = m === 0 ? 0 : -m * m * Th
+      const W = R * Th
+      const Wr = dR * Th
+      const Wt = (R * ThT) / rs
+      const Wx = Wr * c - Wt * sn
+      const Wy = Wr * sn + Wt * c
+      // Polar Hessian (orthonormal basis) -> cartesian.
+      const Hrr = ddR * Th
+      const Hrt = (dR * ThT) / rs - (R * ThT) / (rs * rs)
+      const Htt = (R * ThTT) / (rs * rs) + dR * Th / rs
+      const Hxx = Hrr * c * c - 2 * Hrt * c * sn + Htt * sn * sn
+      const Hyy = Hrr * sn * sn + 2 * Hrt * c * sn + Htt * c * c
+      const Hxy = (Hrr - Htt) * c * sn + Hrt * (c * c - sn * sn)
+      const q = this.tauQ[base + j]; const qd = this.tauQd[base + j]; const qdd = this.tauQdd[base + j]
+      out.h += q * W
+      out.hx += q * Wx; out.hy += q * Wy
+      out.hxx += q * Hxx; out.hxy += q * Hxy; out.hyy += q * Hyy
+      out.ht += qd * W
+      out.htt += qdd * W
+      out.htx += qd * Wx; out.hty += qd * Wy
+    }
   }
 
   /** q-only modal coefficients (M6-6): identical A..D expressions to
