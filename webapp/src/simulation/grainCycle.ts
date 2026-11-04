@@ -26,6 +26,10 @@ export type GrainModel = 'roll' | 'point'
 
 export interface GrainCycleParams extends ImpactParams {
   model: GrainModel
+  /** M6-21: linear air drag in flight (1/s), still air. 0 = off. */
+  dragGamma?: number
+  /** M6-21: viscous spin decay in flight (1/s). 0 = off. */
+  spinGamma?: number
 }
 
 export interface GrainStats {
@@ -42,6 +46,8 @@ export interface GrainStats {
   netContactX: number; netContactY: number
   pathFlightM: number; pathContactM: number
   impactImpulseX: number; impactImpulseY: number
+  /** Sum of per-impact |dVh| magnitudes (cancellation analysis). */
+  impactImpulseMagSum: number
   contactImpulseX: number; contactImpulseY: number
   conversionImpulseX: number; conversionImpulseY: number
   vxNow: number; vyNow: number
@@ -97,7 +103,7 @@ export class GrainCycleSim {
           impacts: 0, detaches: 0, contactTime: 0, lost: false,
           netFlightX: 0, netFlightY: 0, netContactX: 0, netContactY: 0,
           pathFlightM: 0, pathContactM: 0,
-          impactImpulseX: 0, impactImpulseY: 0,
+          impactImpulseX: 0, impactImpulseY: 0, impactImpulseMagSum: 0,
           contactImpulseX: 0, contactImpulseY: 0,
           conversionImpulseX: 0, conversionImpulseY: 0,
           vxNow: ini.vx ?? 0, vyNow: ini.vy ?? 0,
@@ -169,11 +175,25 @@ export class GrainCycleSim {
   }
 
   private ballisticAt(fly: FlightState, tau: number, out: FlightState): void {
-    out.cx = fly.cx + fly.vx * tau
-    out.cy = fly.cy + fly.vy * tau
-    out.cz = fly.cz + fly.vz * tau - 0.5 * G * tau * tau
-    out.vx = fly.vx; out.vy = fly.vy; out.vz = fly.vz - G * tau
-    out.wx = fly.wx; out.wy = fly.wy; out.wz = fly.wz
+    const gam = this.params.dragGamma ?? 0
+    const gs = this.params.spinGamma ?? 0
+    if (gam === 0) {
+      out.cx = fly.cx + fly.vx * tau
+      out.cy = fly.cy + fly.vy * tau
+      out.cz = fly.cz + fly.vz * tau - 0.5 * G * tau * tau
+      out.vx = fly.vx; out.vy = fly.vy; out.vz = fly.vz - G * tau
+    } else {
+      // Linear drag closed form (still air): v' = -gam v - g zhat.
+      const e = Math.exp(-gam * tau)
+      const k = (1 - e) / gam
+      out.cx = fly.cx + fly.vx * k
+      out.cy = fly.cy + fly.vy * k
+      out.cz = fly.cz + (fly.vz + G / gam) * k - (G / gam) * tau
+      out.vx = fly.vx * e; out.vy = fly.vy * e
+      out.vz = (fly.vz + G / gam) * e - G / gam
+    }
+    const es = gs === 0 ? 1 : Math.exp(-gs * tau)
+    out.wx = fly.wx * es; out.wy = fly.wy * es; out.wz = fly.wz * es
   }
 
   private advanceGrain(g: Grain, t0: number, dt: number): void {
@@ -257,6 +277,7 @@ export class GrainCycleSim {
       if (r.mode === 'separating') return
       g.stats.impactImpulseX += g.fly.vx - vxPre
       g.stats.impactImpulseY += g.fly.vy - vyPre
+      g.stats.impactImpulseMagSum += Math.hypot(g.fly.vx - vxPre, g.fly.vy - vyPre)
       // Capture if rebound normal speed is negligible: recompute
       // normal relative speed after impact.
       const [qx, qy] = r.contact
@@ -298,6 +319,7 @@ export class GrainCycleSim {
     fly.vz += Jn * nz + jfz
     g.stats.impactImpulseX += Jn * nx + jfx
     g.stats.impactImpulseY += Jn * ny + jfy
+    g.stats.impactImpulseMagSum += Math.hypot(Jn * nx + jfx, Jn * ny + jfy)
     const unPost = fly.vx * nx + fly.vy * ny + (fly.vz - s.ht) * nz
     if (unPost <= G * this.currentDt) {
       g.seated = { x: fly.cx, y: fly.cy, vx: fly.vx, vy: fly.vy }

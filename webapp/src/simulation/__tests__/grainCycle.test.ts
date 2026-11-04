@@ -65,3 +65,32 @@ describe('M6-20 transport decomposition conservation', () => {
     }
   })
 })
+
+describe('M6-21 air drag flight', () => {
+  it('drag flight matches independent RK4 integration to impact', () => {
+    const gam = 3
+    const plate = new TransientPlate(singleToneScore(152, 0, 30), [0, 0])
+    const sim = new GrainCycleSim(plate,
+      { ...base, model: 'roll', dragGamma: gam } as GrainCycleParams,
+      [{ x: -0.05, y: 0, dropM: 0.2, vx: 0.5 }])
+    // Oracle: RK4 on (x,z,vx,vz) with a = -gam v - g zhat.
+    let ox = -0.05; let oz = base.radius + 0.2; let ovx = 0.5; let ovz = 0
+    const h = 1e-5
+    const deriv = (vx: number, vz: number): [number, number] => [-gam * vx, -gam * vz - G]
+    while (oz > base.radius) {
+      const [k1x, k1z] = deriv(ovx, ovz)
+      const [k2x, k2z] = deriv(ovx + k1x * h / 2, ovz + k1z * h / 2)
+      const [k3x, k3z] = deriv(ovx + k2x * h / 2, ovz + k2z * h / 2)
+      const [k4x, k4z] = deriv(ovx + k3x * h, ovz + k3z * h)
+      ox += ovx * h; oz += ovz * h
+      ovx += (h / 6) * (k1x + 2 * k2x + 2 * k3x + k4x)
+      ovz += (h / 6) * (k1z + 2 * k2z + 2 * k3z + k4z)
+    }
+    for (let k = 0; k < Math.round(0.6 / DT) && sim.stats()[0].impacts === 0; k++) sim.step(DT)
+    const st = sim.stats()[0]
+    expect(st.impacts).toBe(1)
+    expect(Math.abs(st.netFlightX - (ox - (-0.05)))).toBeLessThan(2e-4)
+    // Approaches terminal velocity scale g/gam for long drops:
+    expect(Math.abs(ovz)).toBeLessThan(G / gam)
+  })
+})
