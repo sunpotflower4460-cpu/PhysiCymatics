@@ -44,3 +44,24 @@ describe('M6-19 grain cycle harness', () => {
     void G
   })
 })
+
+describe('M6-20 transport decomposition conservation', () => {
+  it('displacement and momentum decompositions telescope', () => {
+    for (const model of ['roll', 'point'] as const) {
+      const plate = new TransientPlate(singleToneScore(152, 0, 30), [0, 0])
+      const sim = new GrainCycleSim(plate, { ...base, model } as GrainCycleParams,
+        [{ x: -0.03, y: 0.01, dropM: 0.003, vx: 0.15 }])
+      for (let k = 0; k < Math.round(0.4 / DT); k++) sim.step(DT)
+      const st = sim.stats()[0]
+      // Displacement: flight + contact = total (center-based).
+      expect(st.netFlightX + st.netContactX).toBeCloseTo(st.x - (-0.03), 9)
+      expect(st.netFlightY + st.netContactY).toBeCloseTo(st.y - 0.01, 9)
+      // Momentum: initial + impact + contact + conversion = final.
+      expect(0.15 + st.impactImpulseX + st.contactImpulseX + st.conversionImpulseX)
+        .toBeCloseTo(st.vxNow, 6)
+      expect(0 + st.impactImpulseY + st.contactImpulseY + st.conversionImpulseY)
+        .toBeCloseTo(st.vyNow, 6)
+      expect(st.pathFlightM + st.pathContactM).toBeGreaterThan(0)
+    }
+  })
+})

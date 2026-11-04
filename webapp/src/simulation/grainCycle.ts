@@ -9,7 +9,7 @@
 import { G } from './surface'
 import type { TransientPlate } from './plateTransient'
 import {
-  stepDynRolling, dynCenterPartials,
+  stepDynRolling, dynCenterPartials, dynCenterVelocity,
   type SurfaceFnDyn,
 } from './rollingDynamic'
 import {
@@ -30,12 +30,21 @@ export interface GrainCycleParams extends ImpactParams {
 
 export interface GrainStats {
   t: number
+  /** Center horizontal position (roll model) / point position. */
   x: number; y: number
   pathM: number
   impacts: number
   detaches: number
   contactTime: number
   lost: boolean
+  // M6-20 transport decomposition (docs/m6_20_design.md).
+  netFlightX: number; netFlightY: number
+  netContactX: number; netContactY: number
+  pathFlightM: number; pathContactM: number
+  impactImpulseX: number; impactImpulseY: number
+  contactImpulseX: number; contactImpulseY: number
+  conversionImpulseX: number; conversionImpulseY: number
+  vxNow: number; vyNow: number
 }
 
 interface Grain {
@@ -45,6 +54,7 @@ interface Grain {
   seated: SeatedState
   stats: GrainStats
   lastHx: number; lastHy: number
+  lastQ: [number, number] | null
 }
 
 const CONTACT_SAMPLES = 8
@@ -85,8 +95,14 @@ export class GrainCycleSim {
         stats: {
           t: 0, x: ini.x, y: ini.y, pathM: 0,
           impacts: 0, detaches: 0, contactTime: 0, lost: false,
+          netFlightX: 0, netFlightY: 0, netContactX: 0, netContactY: 0,
+          pathFlightM: 0, pathContactM: 0,
+          impactImpulseX: 0, impactImpulseY: 0,
+          contactImpulseX: 0, contactImpulseY: 0,
+          conversionImpulseX: 0, conversionImpulseY: 0,
+          vxNow: ini.vx ?? 0, vyNow: ini.vy ?? 0,
         },
-        lastHx: ini.x, lastHy: ini.y,
+        lastHx: ini.x, lastHy: ini.y, lastQ: null,
       })
     }
   }
@@ -111,24 +127,42 @@ export class GrainCycleSim {
     }
     for (const g of this.grains) {
       if (!g.stats.lost) this.advanceGrain(g, t0, dt)
-      const [hx, hy] = this.horizontalOf(g)
+      const [hx, hy] = this.horizontalOf(g, t0 + dt)
       g.stats.pathM += Math.hypot(hx - g.lastHx, hy - g.lastHy)
       g.lastHx = hx; g.lastHy = hy
       g.stats.x = hx; g.stats.y = hy; g.stats.t = t0 + dt
+      const [vx, vy] = this.centerVelH(g, t0 + dt)
+      g.stats.vxNow = vx; g.stats.vyNow = vy
       if (Math.hypot(hx, hy) > this.plate.a) g.stats.lost = true
     }
     this.t = t0 + dt
   }
 
-  private horizontalOf(g: Grain): [number, number] {
+  /** Center horizontal position (consistent across transitions). */
+  private horizontalOf(g: Grain, tAbs: number): [number, number] {
     if (this.params.model === 'roll') {
-      return g.mode === 'fly' ? [g.fly.cx, g.fly.cy] : [g.roll.x, g.roll.y]
+      if (g.mode === 'fly') return [g.fly.cx, g.fly.cy]
+      const cp = dynCenterPartials(g.roll.x, g.roll.y, tAbs, this.dynSurf, this.params.radius)
+      return [cp.C[0], cp.C[1]]
     }
     return g.mode === 'fly' ? [g.fly.cx, g.fly.cy] : [g.seated.x, g.seated.y]
   }
 
-  private sphereGap(fly: FlightState, tAbs: number): number {
-    const [qx, qy] = solveContactParams(fly.cx, fly.cy, this.dynSurf, this.params.radius, tAbs)
+  /** Center horizontal velocity in the current mode. */
+  private centerVelH(g: Grain, tAbs: number): [number, number] {
+    if (g.mode === 'fly') return [g.fly.vx, g.fly.vy]
+    if (this.params.model === 'roll') {
+      const v: [number, number, number] = [0, 0, 0]
+      dynCenterVelocity(g.roll, this.dynSurf, this.params, tAbs, v)
+      return [v[0], v[1]]
+    }
+    return [g.seated.vx, g.seated.vy]
+  }
+
+  private sphereGap(g: Grain, fly: FlightState, tAbs: number): number {
+    const [qx, qy] = solveContactParams(
+      fly.cx, fly.cy, this.dynSurf, this.params.radius, tAbs, g.lastQ ?? undefined)
+    g.lastQ = [qx, qy]
     const cp = dynCenterPartials(qx, qy, tAbs, this.dynSurf, this.params.radius)
     return (fly.cx - cp.C[0]) * cp.n[0] + (fly.cy - cp.C[1]) * cp.n[1]
       + (fly.cz - cp.C[2]) * cp.n[2]
@@ -147,13 +181,28 @@ export class GrainCycleSim {
     let tc = t0
     for (let iter = 0; iter < 32 && rem > 0; iter++) {
       if (g.mode === 'fly') {
-        rem -= this.advanceFlight(g, tc, rem)
+        const [hx0, hy0] = this.horizontalOf(g, tc)
+        const used = this.advanceFlight(g, tc, rem)
+        rem -= used
         tc = t0 + (dt - rem)
+        const [hx1, hy1] = this.horizontalOf(g, tc)
+        g.stats.netFlightX += hx1 - hx0
+        g.stats.netFlightY += hy1 - hy0
+        g.stats.pathFlightM += Math.hypot(hx1 - hx0, hy1 - hy0)
       } else {
+        const [hx0, hy0] = this.horizontalOf(g, tc)
+        const [vx0, vy0] = this.centerVelH(g, tc)
         const before = rem
         rem -= this.advanceContact(g, tc, rem)
         g.stats.contactTime += before - rem
         tc = t0 + (dt - rem)
+        const [hx1, hy1] = this.horizontalOf(g, tc)
+        const [vx1, vy1] = this.centerVelH(g, tc)
+        g.stats.netContactX += hx1 - hx0
+        g.stats.netContactY += hy1 - hy0
+        g.stats.pathContactM += Math.hypot(hx1 - hx0, hy1 - hy0)
+        g.stats.contactImpulseX += vx1 - vx0
+        g.stats.contactImpulseY += vy1 - vy0
       }
     }
   }
@@ -165,7 +214,7 @@ export class GrainCycleSim {
     const probe: FlightState = { ...fly }
     const gapAt = (tau: number): number => {
       this.ballisticAt(fly, tau, probe)
-      if (p.model === 'roll') return this.sphereGap(probe, tc + tau)
+      if (p.model === 'roll') return this.sphereGap(g, probe, tc + tau)
       this.plate.surfAtConsistent(probe.cx, probe.cy, tc + tau, this.out5)
       return probe.cz - this.out5[0]
     }
@@ -203,8 +252,11 @@ export class GrainCycleSim {
     const p = this.params
     g.stats.impacts++
     if (p.model === 'roll') {
+      const vxPre = g.fly.vx; const vyPre = g.fly.vy
       const r = sphereImpact(g.fly, this.dynSurf, p, tc)
       if (r.mode === 'separating') return
+      g.stats.impactImpulseX += g.fly.vx - vxPre
+      g.stats.impactImpulseY += g.fly.vy - vyPre
       // Capture if rebound normal speed is negligible: recompute
       // normal relative speed after impact.
       const [qx, qy] = r.contact
@@ -214,8 +266,13 @@ export class GrainCycleSim {
         + (g.fly.vz - this.out5[3]) * cp.n[2]
       // Capture threshold g*dt (docs/m6_19_design.md; exact at e=0).
       if (unPost <= G * this.currentDt) {
+        const vxPre = g.fly.vx; const vyPre = g.fly.vy
         g.roll = flightToRolling(g.fly, this.dynSurf, p, tc)
         g.mode = 'contact'
+        const vPost: [number, number, number] = [0, 0, 0]
+        dynCenterVelocity(g.roll, this.dynSurf, p, tc, vPost)
+        g.stats.conversionImpulseX += vPost[0] - vxPre
+        g.stats.conversionImpulseY += vPost[1] - vyPre
       }
       return
     }
@@ -239,6 +296,8 @@ export class GrainCycleSim {
     fly.vx += Jn * nx + jfx
     fly.vy += Jn * ny + jfy
     fly.vz += Jn * nz + jfz
+    g.stats.impactImpulseX += Jn * nx + jfx
+    g.stats.impactImpulseY += Jn * ny + jfy
     const unPost = fly.vx * nx + fly.vy * ny + (fly.vz - s.ht) * nz
     if (unPost <= G * this.currentDt) {
       g.seated = { x: fly.cx, y: fly.cy, vx: fly.vx, vy: fly.vy }
