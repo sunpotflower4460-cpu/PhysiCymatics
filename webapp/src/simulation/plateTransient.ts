@@ -719,6 +719,117 @@ export class TransientPlate {
    *  only the spatial shape evaluation differs, so differences vs
    *  surfAt isolate the geometry representation. out = same layout
    *  as surfAt [h, hx, hy, wt, wtt]. */
+  /** M6-16: radial interpolant with third derivative per rho.
+   *  Hermite intervals: the third derivative is piecewise constant
+   *  (jumps at nodes — documented, docs/m6_16_design.md). Center
+   *  parity interval differentiated in power form.
+   *  out = [R, dR, ddR, dddR]. */
+  radialInterp3(mi: number, rho: number, out: Float64Array): void {
+    this.radialInterp(mi, rho, out)
+    const stride = BD.ngrid
+    const n = this.ng1
+    const x = Math.min(Math.max(rho, 0), 1) * n
+    const k = Math.min(x | 0, n - 1)
+    const drho = 1 / n
+    const R0 = this.Rflat[mi * stride + k]; const R1 = this.Rflat[mi * stride + k + 1]
+    const D0 = this.dRflat[mi * stride + k] * this.a
+    const D1 = this.dRflat[mi * stride + k + 1] * this.a
+    if (k === 0) {
+      const m = this.modes[mi].m
+      const L = drho
+      let a: number; let b: number; let c2: number
+      if (m === 0) { a = R0; c2 = (L * D1) / 2 - (R1 - R0); b = (R1 - R0) - c2 }
+      else if (m === 1) { a = D0; const S = R1 / L; c2 = (D1 - S) / 2 - (S - a); b = (S - a) - c2 }
+      else { c2 = 0; const S = R1 / Math.pow(L, m); b = (D1 / Math.pow(L, m - 1) - m * S) / 2; a = S - b }
+      const r = Math.min(Math.max(rho, 0), 1)
+      const d3 = (coef: number, kk: number): number =>
+        kk < 3 ? 0 : coef * kk * (kk - 1) * (kk - 2) * Math.pow(r, kk - 3)
+      out[3] = d3(a, m) + d3(b / (L * L), m + 2) + d3(c2 / (L ** 4), m + 4)
+      return
+    }
+    out[3] = (12 * R0 + 6 * drho * D0 - 12 * R1 + 6 * drho * D1) / (drho ** 3)
+  }
+
+  /** M6-16: third spatial derivatives of the consistent height.
+   *  Polar orthonormal components from the radial derivatives and
+   *  angular factors, rotated to Cartesian. The third radial
+   *  derivative jumps at radial nodes, so these are piecewise
+   *  defined there. */
+  surfaceThirdConsistent(
+    x: number, y: number, tau: number,
+    out: { hxxx: number; hxxy: number; hxyy: number; hyyy: number },
+  ): void {
+    out.hxxx = 0; out.hxxy = 0; out.hxyy = 0; out.hyyy = 0
+    const seg = this.seg
+    if (!seg) return
+    const base = this.modalCoeffs(tau)
+    const r = Math.hypot(x, y)
+    const ri = new Float64Array(4)
+    if (r < 1e-12) {
+      let lastMode = -1; let C3 = 0
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        if (m !== 1 && m !== 3) continue
+        if (mi !== lastMode) {
+          this.radialInterp3(mi, 0, ri)
+          C3 = (ri[3] / 6) / (this.a ** 3)
+          lastMode = mi
+        }
+        const q = this.tauQ[base + j]
+        if (m === 1 && this.dofCos[j] === 1) { out.hxxx += 6 * C3 * q; out.hxyy += 2 * C3 * q }
+        else if (m === 1) { out.hyyy += 6 * C3 * q; out.hxxy += 2 * C3 * q }
+        else if (m === 3 && this.dofCos[j] === 1) { out.hxxx += 6 * C3 * q; out.hxyy -= 6 * C3 * q }
+        else { out.hyyy -= 6 * C3 * q; out.hxxy += 6 * C3 * q }
+      }
+      return
+    }
+    const c = x / r; const sn = y / r
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
+    for (let m = 2; m <= 4; m++) {
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
+    }
+    const basis: [number, number][] = [[c, sn], [-sn, c]] // e_r, e_t
+    let lastMode = -1; let R = 0; let dR = 0; let ddR = 0; let dddR = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const mi = this.dofMode[j]; const m = this.dofM[j]
+      if (mi !== lastMode) {
+        this.radialInterp3(mi, r / this.a, ri)
+        R = ri[0]; dR = ri[1] / this.a; ddR = ri[2] / (this.a ** 2); dddR = ri[3] / (this.a ** 3)
+        lastMode = mi
+      }
+      const isCos = m === 0 || this.dofCos[j] === 1
+      const Th = m === 0 ? 1 : isCos ? CM[m] : SM[m]
+      const ThT = m === 0 ? 0 : isCos ? -m * SM[m] : m * CM[m]
+      const fT = R * ThT
+      const frT = dR * ThT
+      const frrT = ddR * ThT
+      const fTT = -m * m * R * Th
+      const frTT = -m * m * dR * Th
+      const fTTT = -m * m * R * ThT
+      const r2 = r * r; const r3 = r2 * r
+      // Symmetric polar components indexed by number of t indices.
+      const Tp = [
+        dddR * Th,
+        frrT / r - 2 * frT / r2 + 2 * fT / r3,
+        frTT / r2 - 2 * fTT / r3 + ddR * Th / r - dR * Th / r2,
+        fTTT / r3 + 3 * frT / r2 - 2 * fT / r3,
+      ]
+      const q = this.tauQ[base + j]
+      const comp = (i0: number, i1: number, i2: number): number => {
+        let s = 0
+        for (let i = 0; i < 2; i++) for (let jj = 0; jj < 2; jj++) for (let k = 0; k < 2; k++) {
+          s += Tp[i + jj + k] * basis[i][i0] * basis[jj][i1] * basis[k][i2]
+        }
+        return s
+      }
+      out.hxxx += q * comp(0, 0, 0)
+      out.hxxy += q * comp(0, 0, 1)
+      out.hxyy += q * comp(0, 1, 1)
+      out.hyyy += q * comp(1, 1, 1)
+    }
+  }
+
   private _phiMaxConsistent: Float64Array | null = null
   /** M6-14B: conservative per-mode max |Rhat(rho)| for the
    *  consistent interpolant. Hermite intervals use the Bernstein

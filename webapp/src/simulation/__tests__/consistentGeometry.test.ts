@@ -271,3 +271,47 @@ describe('M6-14B review fixes: bounds and checkpoints under consistent geometry'
     expect(plate3.geometryMode).toBe('bin')
   })
 })
+
+describe('M6-16 third derivatives of consistent geometry', () => {
+  const mkF = () => ({ h: 0, hx: 0, hy: 0, hxx: 0, hxy: 0, hyy: 0, ht: 0, htt: 0, htx: 0, hty: 0 })
+
+  it('third derivatives match FD of the Hessian field', () => {
+    const plate = excited()
+    const eps = 1e-6
+    let worst = 0
+    for (const [x, y] of [[0.0317, -0.0213], [-0.0471, 0.0333], [0.0089, 0.0617], [-0.0023, -0.0109]] as const) {
+      const t3 = { hxxx: 0, hxxy: 0, hxyy: 0, hyyy: 0 }
+      plate.surfaceThirdConsistent(x, y, TAU, t3)
+      const fxP = mkF(); plate.surfaceFieldConsistent(x + eps, y, TAU, fxP)
+      const fxM = mkF(); plate.surfaceFieldConsistent(x - eps, y, TAU, fxM)
+      const fyP = mkF(); plate.surfaceFieldConsistent(x, y + eps, TAU, fyP)
+      const fyM = mkF(); plate.surfaceFieldConsistent(x, y - eps, TAU, fyM)
+      const fd = {
+        hxxx: (fxP.hxx - fxM.hxx) / (2 * eps),
+        hxxy: (fyP.hxx - fyM.hxx) / (2 * eps),
+        hxyy: (fxP.hyy - fxM.hyy) / (2 * eps),
+        hyyy: (fyP.hyy - fyM.hyy) / (2 * eps),
+      }
+      for (const k of ['hxxx', 'hxxy', 'hxyy', 'hyyy'] as const) {
+        const err = Math.abs(fd[k] - t3[k]) / (1 + Math.abs(t3[k]))
+        worst = Math.max(worst, err)
+        expect(err).toBeLessThan(0.02)
+      }
+    }
+    console.log('third-derivative FD worst scaled error:', worst)
+  })
+
+  it('center third derivatives are directional limits', () => {
+    const plate = excited()
+    const c0 = { hxxx: 0, hxxy: 0, hxyy: 0, hyyy: 0 }
+    plate.surfaceThirdConsistent(0, 0, TAU, c0)
+    for (const v of Object.values(c0)) expect(Number.isFinite(v)).toBe(true)
+    for (const ang of [0, 0.9, 2.4]) {
+      const f = { hxxx: 0, hxxy: 0, hxyy: 0, hyyy: 0 }
+      plate.surfaceThirdConsistent(1e-5 * Math.cos(ang), 1e-5 * Math.sin(ang), TAU, f)
+      for (const k of ['hxxx', 'hxxy', 'hxyy', 'hyyy'] as const) {
+        expect(Math.abs(f[k] - c0[k])).toBeLessThan(0.05 * (1 + Math.abs(c0[k])) + 50)
+      }
+    }
+  })
+})
