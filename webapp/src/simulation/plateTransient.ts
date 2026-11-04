@@ -735,7 +735,12 @@ export class TransientPlate {
       const dLo = Math.min(c * fLo, c * fHi); const dHi = Math.max(c * fLo, c * fHi)
       let lo = dLo - 2 * this.zeta * w * rd[1] - w * w * rq[1]
       let hi = dHi - 2 * this.zeta * w * rd[0] - w * w * rq[0]
-      const wd = 1e-9 * (1 + Math.abs(lo) + Math.abs(hi))
+      // Rounding hair: the discrepancy between modalCoeffs' evaluation
+      // order and the exact range math is ulp-scale on q (~1e-20 abs)
+      // amplified by w^2 (~1e-12 abs per DOF). 1e-12 relative matches
+      // the segQRange widening; the former 1e-9 left an unprovable
+      // ~1e-5 m/s2 band around the detach threshold (M6-12R).
+      const wd = 1e-12 * (1 + Math.abs(lo) + Math.abs(hi))
       lo -= wd; hi += wd
       lb += Math.min(phi[j] * lo, phi[j] * hi)
     }

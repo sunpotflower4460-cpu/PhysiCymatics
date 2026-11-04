@@ -385,7 +385,7 @@ class TransientPlate:
         w = self.omega
         lo = dlo - 2*self.zeta*w*qdmax - w*w*sqmax
         hi = dhi - 2*self.zeta*w*qdmin - w*w*sqmin
-        wd = 1e-9*(1.0 + np.abs(lo) + np.abs(hi))
+        wd = 1e-12*(1.0 + np.abs(lo) + np.abs(hi))
         lo -= wd; hi += wd
         phis = np.array([float(_phi_grad(self.modes[d["mode"]], d["kind"],
                                           np.array([x]), np.array([y]))[0][0])
