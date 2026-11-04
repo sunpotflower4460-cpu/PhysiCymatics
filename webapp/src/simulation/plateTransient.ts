@@ -30,6 +30,8 @@ export interface PlateCheckpoint {
   t: number; epoch: number
   driveXY: [number, number]
   accelMode: 'hermite' | 'ode'
+  /** M6-14B: physics geometry switch; absent in older checkpoints. */
+  geometryMode?: 'bin' | 'consistent'
   scoreKey: string
   q: Float64Array; qd: Float64Array
   seg: {
@@ -349,6 +351,29 @@ export class TransientPlate {
     }
   }
 
+  /** Consistent-geometry analogue of phiAll: per-DOF spatial weight
+   *  Rhat(rho) * Theta(theta) from the interpolant (M6-14B). */
+  phiAllConsistent(x: number, y: number, out: Float64Array): void {
+    const r = Math.hypot(x, y)
+    const rs = r < 1e-12 ? 1e-12 : r
+    const c = x / rs; const sn = y / rs
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
+    for (let m = 2; m <= 4; m++) {
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
+    }
+    const ri = new Float64Array(3)
+    let lastMode = -1; let R = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const mi = this.dofMode[j]; const m = this.dofM[j]
+      if (mi !== lastMode) {
+        this.radialInterp(mi, r / this.a, ri)
+        R = ri[0]; lastMode = mi
+      }
+      out[j] = m === 0 ? R : this.dofCos[j] ? R * CM[m] : R * SM[m]
+    }
+  }
+
   private accel(q: Float64Array, qd: Float64Array, t: number, out: Float64Array): void {
     const ts = t - this.epoch
     const F = this.signal.forcePeakAt(ts) * this.signal.u(ts)
@@ -406,8 +431,13 @@ export class TransientPlate {
     // Conservative |h| bound over the segment (see Python plate_transient).
     // Hermite tangent basis max is 4/27 (at s=1/3), not 0.105.
     let hb = 0
+    // Geometry-aware (M6-14B review): the consistent interpolant
+    // exceeds |Phi|=1 slightly, so weight each DOF by its mode's
+    // conservative max |Rhat| in that geometry.
+    const phiMax = this.geometryMode === 'consistent' ? this.phiMaxConsistent() : null
     for (let j = 0; j < n; j++) {
-      hb += Math.max(Math.abs(q0[j]), Math.abs(q[j])) + (4 / 27) * (t1 - t0) * (Math.abs(qd0[j]) + Math.abs(qd[j]))
+      const wgt = phiMax ? phiMax[this.dofMode[j]] : 1
+      hb += wgt * (Math.max(Math.abs(q0[j]), Math.abs(q[j])) + (4 / 27) * (t1 - t0) * (Math.abs(qd0[j]) + Math.abs(qd[j])))
     }
     this.hBound = hb
     this.tauSlotTau.fill(NaN)
@@ -444,6 +474,7 @@ export class TransientPlate {
       t: this.t, epoch: this.epoch,
       driveXY: [this.driveXY[0], this.driveXY[1]],
       accelMode: this._accelMode,
+      geometryMode: this.geometryMode,
       scoreKey: JSON.stringify(this.signal.score),
       q: Float64Array.from(this.q), qd: Float64Array.from(this.qd),
       seg: seg ? {
@@ -462,6 +493,9 @@ export class TransientPlate {
     }
     this.epoch = cp.epoch
     this.t = cp.t
+    // Restore the geometry switch BEFORE finalizeSegment (hBound
+    // depends on it); older checkpoints fall back to 'bin'.
+    this.geometryMode = cp.geometryMode ?? 'bin'
     this.setDrive(cp.driveXY[0], cp.driveXY[1])
     this.q = Float64Array.from(cp.q); this.qd = Float64Array.from(cp.qd)
     this.sliceCache = null
@@ -1132,7 +1166,10 @@ export class TransientPlate {
     const qdb = this.tauQd.slice(baseB, baseB + n)
     if (!this.boundPhi) this.boundPhi = new Float64Array(n)
     const phi = this.boundPhi
-    this.phiAll(x, y, phi)
+    // Geometry-aware (M6-14B review): the bound must use the same
+    // spatial weights as the acceleration being bounded.
+    if (this.geometryMode === 'consistent') this.phiAllConsistent(x, y, phi)
+    else this.phiAll(x, y, phi)
     const [fLo, fHi] = this.forceRange(ta, tb)
     const h = tb - ta
     let lb = 0

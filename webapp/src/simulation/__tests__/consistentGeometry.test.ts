@@ -224,3 +224,50 @@ describe('M6-14B consistent bounds', () => {
     expect(ha[0]).toBe(o2[0]); expect(ha[1]).toBe(o2[4])
   })
 })
+
+describe('M6-14B review fixes: bounds and checkpoints under consistent geometry', () => {
+  it('hBound covers sampled |h| over the segment', () => {
+    const plate = excited()
+    plate.geometryMode = 'consistent'
+    plate.beginStep(0, 1 / (44 * 152)) // rebuild hBound under consistent weights
+    const o = new Float64Array(5)
+    let mx = 0
+    for (let ti = 0; ti <= 20; ti++) {
+      const tau = (ti / 20) * (1 / (44 * 152))
+      for (let k = 0; k < 400; k++) {
+        const ang = k * 2.399963; const rr = 0.12 * Math.sqrt((k + 0.5) / 400)
+        plate.surfAtConsistent(rr * Math.cos(ang), rr * Math.sin(ang), tau, o)
+        mx = Math.max(mx, Math.abs(o[0]))
+      }
+    }
+    expect(plate.hBound).toBeGreaterThanOrEqual(mx)
+  })
+
+  it('wttLowerBound bounds consistent-geometry acceleration', () => {
+    const plate = excited()
+    plate.geometryMode = 'consistent'
+    plate.accelMode = 'ode'
+    const dt = 1 / (44 * 152)
+    for (const [x, y] of [[0.118356, 0], [0.03, -0.04], [0, 0.09]] as const) {
+      const lb = plate.wttLowerBound(x, y, 0, dt)
+      let mn = Infinity
+      for (let i = 0; i <= 200; i++) mn = Math.min(mn, plate.accelAt(x, y, (dt * i) / 200))
+      expect(lb).toBeLessThanOrEqual(mn + 1e-9)
+    }
+  })
+
+  it('checkpoint preserves geometryMode; legacy falls back to bin', () => {
+    const plate = excited()
+    plate.geometryMode = 'consistent'
+    const cp = plate.checkpointPlate()
+    const plate2 = excited()
+    plate2.restorePlate(cp)
+    expect(plate2.geometryMode).toBe('consistent')
+    const legacy = { ...cp }
+    delete legacy.geometryMode
+    const plate3 = excited()
+    plate3.geometryMode = 'consistent'
+    plate3.restorePlate(legacy)
+    expect(plate3.geometryMode).toBe('bin')
+  })
+})

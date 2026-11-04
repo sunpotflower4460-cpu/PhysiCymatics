@@ -436,6 +436,9 @@ describe('M6-14R setScore cache invalidation', () => {
     plate.accelMode = 'ode'
     plate.beginStep(0, dt)
     expect(plate.accelAt(0.02, 0.01, dt)).toBe(0)
+    // Replace with a driven score at the segment endpoint (phase
+    // chosen so force is nonzero there); evaluation before the next
+    // beginStep must already see the new force and live DOFs.
     plate.setScore({
       schema: 'physicymatics.score.v1', duration_s: 30,
       initialPhase_rad: -Math.PI / 2, audioGain: 0.2,
