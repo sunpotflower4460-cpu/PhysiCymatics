@@ -230,7 +230,7 @@ benchIt('M6-11R R3 adversarial detach-finder search (scan vs interval vs dense)'
       const dt = 1 / (44 * freq)
       // Warm up well into the driven transient.
       for (let k = 0; k < 600; k++) plate.beginStep(k * dt, (k + 1) * dt)
-      let dense = 0, scanFound = 0, scanMiss = 0, intervalFound = 0, intervalMiss = 0, timeMismatch = 0
+      let dense = 0, scanFound = 0, scanMiss = 0, intervalFound = 0, intervalMiss = 0, intervalUnknown = 0, timeMismatch = 0
       let narrowest = Infinity
       for (let s = 600; s < 720; s++) {
         plate.beginStep(s * dt, (s + 1) * dt)
@@ -245,13 +245,15 @@ benchIt('M6-11R R3 adversarial detach-finder search (scan vs interval vs dense)'
           if (first === null) continue
           dense++; narrowest = Math.min(narrowest, last! - first)
           const sOnly = scanOnlyDetach(plate, x, y, t0, t1)
-          const iGot = plate.firstDetachBelow(x, y, t0, t1)
+          const iRes = plate.firstDetachBelow(x, y, t0, t1)
+          if (iRes.kind === 'unknown') intervalUnknown++
+          const iGot = iRes.kind === 'found' ? iRes.t : null
           if (sOnly !== null) scanFound++; else scanMiss++
           if (iGot !== null) intervalFound++; else intervalMiss++
           if (iGot !== null && Math.abs(iGot - first) > (t1 - t0) / N + 2e-6) timeMismatch++
         }
       }
-      console.log(`R3 f=${freq} force×${fac}: denseRoots=${dense} scanFound=${scanFound} scanMiss=${scanMiss} intervalFound=${intervalFound} intervalMiss=${intervalMiss} timeMismatch=${timeMismatch} narrowestEpisode=${narrowest === Infinity ? 'none' : narrowest.toExponential(2)}s dt=${dt.toExponential(2)}s`)
+      console.log(`R3 f=${freq} force×${fac}: denseRoots=${dense} scanFound=${scanFound} scanMiss=${scanMiss} intervalFound=${intervalFound} intervalMiss=${intervalMiss} intervalUnknown=${intervalUnknown} timeMismatch=${timeMismatch} narrowestEpisode=${narrowest === Infinity ? 'none' : narrowest.toExponential(2)}s dt=${dt.toExponential(2)}s`)
     }
   }
 }, 900000)

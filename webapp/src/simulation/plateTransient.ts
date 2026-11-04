@@ -3,7 +3,7 @@
 // qdd + 2*zeta*omega*qd + omega^2 q = Phi(drive)*F(t)/M, RK4 substeps,
 // cubic-Hermite state evaluation inside a sand step.
 import basisData from '../data/plate_modes_transient.json'
-import { ScoreSignal, type PerformanceScore } from './sequence'
+import { ScoreSignal, type PerformanceScore, type DriveEvent } from './sequence'
 import { G } from './surface'
 
 interface ModeRow { m: number; root_idx: number; f_hz: number; M_kg: number; R: number[]; dR_drho: number[] }
@@ -14,6 +14,15 @@ const CM = new Float64Array(6)
 const SM = new Float64Array(6)
 
 export interface Dof { mode: number; kind: 'cos' | 'sin' }
+
+/** Tri-state result of the interval-assisted detach search (M6-12R):
+ *  'found' = first crossing located; 'none' = absence proven by
+ *  interval bounds; 'unknown' = search budget exhausted (absence NOT
+ *  proven). 'unknown' must never be treated as 'none'. */
+export type DetachSearchResult =
+  | { kind: 'found'; t: number }
+  | { kind: 'none' }
+  | { kind: 'unknown' }
 
 export class TransientPlate {
   readonly a = BD.a_m
@@ -103,7 +112,11 @@ export class TransientPlate {
     let lc = 0
     if (this.liveMaskEnabled) {
       let forcedLive = false
-      if (this.accelMode === 'ode') {
+      // Effective acceleration form for THIS segment: tiny segments
+      // (h < 1e-7) use the ODE form in every accel-bearing cache
+      // (modalCoeffs / tauQH fill), so the mask must keep directly
+      // forced DOFs live under the same criterion (M6-12R review).
+      if (this.accelMode === 'ode' || t1 - t0 < 1e-7) {
         const ts0 = t0 - this.epoch; const ts1 = t1 - this.epoch
         for (const e of this.signal.score.events) {
           if (e.forcePeak_N !== 0 && e.start_s <= ts1 && e.end_s >= ts0) { forcedLive = true; break }
@@ -738,13 +751,35 @@ export class TransientPlate {
   private forceRange(ta: number, tb: number): [number, number] {
     const ts0 = ta - this.epoch; const ts1 = tb - this.epoch
     const sig = this.signal
-    let fpk = 0
+    // Split at every event boundary inside the interval and union the
+    // per-piece exact ranges (force is 0 outside events). Without the
+    // split, a subinterval straddling a boundary would keep the loose
+    // global bound at any width and interval refinement could never
+    // conclude around short events (M6-12R).
+    const cuts = [ts0, ts1]
     for (const e of sig.score.events) {
-      if (e.start_s <= ts1 && e.end_s >= ts0) fpk = Math.max(fpk, Math.abs(e.forcePeak_N))
+      if (e.start_s > ts0 && e.start_s < ts1) cuts.push(e.start_s)
+      if (e.end_s > ts0 && e.end_s < ts1) cuts.push(e.end_s)
     }
-    const eA = sig.eventAt(ts0); const eB = sig.eventAt(ts1)
-    if (!eA || !eB || eA.ev !== eB.ev) return [-fpk, fpk]
-    const ev = eA.ev
+    cuts.sort((a, b) => a - b)
+    let lo = Infinity; let hi = -Infinity
+    for (let ci = 0; ci + 1 < cuts.length; ci++) {
+      const a = cuts[ci]; const b = cuts[ci + 1]
+      const hit = sig.eventAt(a) ?? sig.eventAt(0.5 * (a + b))
+      if (!hit) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); continue }
+      const [plo, phi] = this.forceRangeInEvent(hit.ev, a, b)
+      lo = Math.min(lo, plo); hi = Math.max(hi, phi)
+    }
+    // Include exact endpoint force values (eventAt is start-inclusive).
+    const fA = sig.forcePeakAt(ts0) * sig.u(ts0)
+    const fB = sig.forcePeakAt(ts1) * sig.u(ts1)
+    lo = Math.min(lo, fA, fB); hi = Math.max(hi, fA, fB)
+    return [lo, hi]
+  }
+
+  /** Exact force range on [ts0, ts1] fully inside one score event. */
+  private forceRangeInEvent(ev: DriveEvent, ts0: number, ts1: number): [number, number] {
+    const sig = this.signal
     // Envelope replica of ScoreSignal.u (smoothstep attack/release).
     const envAt = (t: number): number => {
       let env = 1
@@ -761,7 +796,17 @@ export class TransientPlate {
     let eLo = Math.min(envAt(ts0), envAt(ts1))
     let eHi = Math.max(envAt(ts0), envAt(ts1))
     if (ts0 < ev.end_s - ev.release_s && ts1 > ev.start_s + ev.attack_s) eHi = 1
+    // Overlapping attack/release (attack+release > duration, or a
+    // sub-interval inside the overlap): env = min(increasing attack,
+    // decreasing release) peaks where the two ramps cross, below 1.
+    // smooth() is monotone, so the crossing solves
+    // (t-start)/attack = (end-t)/release (M6-12R review).
+    if (ev.attack_s > 0 && ev.release_s > 0) {
+      const tc = (ev.release_s * ev.start_s + ev.attack_s * ev.end_s) / (ev.attack_s + ev.release_s)
+      if (tc >= ts0 && tc <= ts1) eHi = Math.max(eHi, envAt(tc))
+    }
     if (eLo < 0) eLo = 0
+    if (eHi > 1) eHi = 1
     const thA = sig.thetaAt(ts0); const thB = sig.thetaAt(ts1)
     let sLo = Math.min(Math.sin(thA), Math.sin(thB))
     let sHi = Math.max(Math.sin(thA), Math.sin(thB))
@@ -778,16 +823,27 @@ export class TransientPlate {
   }
 
   /** First time in [ta, tb] (inside the current segment) at which the
-   *  implemented wtt at fixed (x, y) crosses below -G, or null.
-   *  Sign changes are bisected; subintervals without one are excluded
-   *  only via wttLowerBound, so root pairs cannot be missed by
-   *  sampling (up to the bound's rounding hair) — unlike a fixed
-   *  scan. Recursion stops at depth 12 or width 1e-10 s; an
-   *  unresolved subinterval at that point returns null (its width is
-   *  below the model's other time resolutions and is reported via
-   *  wttBoundCalls growth in studies). Returns ta when already below. */
-  firstDetachBelow(x: number, y: number, ta: number, tb: number): number | null {
-    if (!this.seg) return null
+   *  implemented wtt at fixed (x, y) crosses below -G.
+   *  Tri-state result (M6-12R): 'found' (first crossing, time order
+   *  guaranteed), 'none' (proven: every subinterval either sampled
+   *  clear with a wttLowerBound proof), or 'unknown' (bound budget
+   *  exhausted before a proof completed — NOT a proof of absence;
+   *  callers must retry with more budget or fail explicitly).
+   *  Scan subintervals are resolved strictly left-to-right: a later
+   *  sampled crossing is never accepted before earlier subintervals
+   *  are proven clear or yield an earlier root. Roots inside a
+   *  1e-11 s window are located by bisection (time error <= window). */
+  /** True when the current segment's acceleration uses the ODE form:
+   *  explicit 'ode' mode, or the tiny-segment (h < 1e-7) stable
+   *  fallback. Callers that assume wtt linear in time (Hermite form)
+   *  must not run when this is true. Canonical steps are never tiny,
+   *  so default-mode production stepping always returns false here. */
+  odeFormActive(): boolean {
+    return this.accelMode === 'ode' || (!!this.seg && this.seg.t1 - this.seg.t0 < 1e-7)
+  }
+
+  firstDetachBelow(x: number, y: number, ta: number, tb: number, budgetIn = 2048): DetachSearchResult {
+    if (!this.seg) return { kind: 'unknown' }
     const bisect = (a: number, b: number): number => {
       let lo = a; let hi = b
       for (let it = 0; it < 40; it++) {
@@ -796,42 +852,55 @@ export class TransientPlate {
       }
       return 0.5 * (lo + hi)
     }
-    // Fast path: sampled sign change (the common detach case).
-    const K = 8
-    let tp = ta
-    const wa0 = this.accelAt(x, y, ta)
-    if (wa0 < -G) return ta
-    let wb0 = wa0
-    for (let k = 1; k <= K; k++) {
-      const t = ta + ((tb - ta) * k) / K
-      const w = this.accelAt(x, y, t)
-      if (w < -G) return bisect(tp, t)
-      tp = t; wb0 = w
-    }
-    // No sampled crossing: prove there is none via the interval bound,
-    // refining only where the bound is inconclusive. Bounded work:
-    // at most 48 bound evaluations; exhaustion returns null (the
-    // unresolved width is then below other model resolutions).
-    // Invariant for search: w(a) >= -G (endpoint values are threaded
-    // through so bisection always brackets a down-crossing).
-    let budget = 48
-    const search = (a: number, b: number, wa: number, wb: number, depth: number): number | null => {
+    let budget = budgetIn
+    // Left-first recursive resolution of one interval whose endpoint
+    // values are known (w(a) >= -G invariant). 'none' is returned
+    // only when every leaf is bound-proven; a bracketed root at
+    // width <= 1e-9 s is located by bisection (documented resolution
+    // floor: an earlier dip inside that window cannot be told apart).
+    const search = (a: number, b: number, wa: number, wb: number, depth: number): DetachSearchResult => {
       if (wb < -G) {
-        if (depth <= 0 || b - a < 1e-10) return bisect(a, b)
+        if (depth <= 0 || b - a < 1e-9) return { kind: 'found', t: bisect(a, b) }
         const m = 0.5 * (a + b)
         const wm = this.accelAt(x, y, m)
-        if (wm < -G) return search(a, m, wa, wm, depth - 1)
-        return search(a, m, wa, wm, depth - 1) ?? search(m, b, wm, wb, depth - 1)
+        const left = search(a, m, wa, wm, depth - 1)
+        if (left.kind === 'found') return left
+        if (left.kind === 'unknown') {
+          // A root in [a, b] is certain (sampled bracket); only its
+          // "firstness" inside the unresolved left part is in doubt.
+          // At this width that doubt is below 1e-9 s of model time.
+          if (b - a < 1e-8) return { kind: 'found', t: bisect(a, b) }
+          return left
+        }
+        return search(m, b, wm, wb, depth - 1)
       }
-      if (budget-- <= 0) return null
-      if (this.wttLowerBound(x, y, a, b) >= -G) return null
-      if (depth <= 0 || b - a < 1e-10) return null
+      if (budget-- <= 0) return { kind: 'unknown' }
+      if (this.wttLowerBound(x, y, a, b) >= -G) return { kind: 'none' }
+      if (depth <= 0 || b - a < 1e-12) return { kind: 'unknown' }
       const m = 0.5 * (a + b)
       const wm = this.accelAt(x, y, m)
-      if (wm < -G) return search(a, m, wa, wm, depth - 1)
-      return search(a, m, wa, wm, depth - 1) ?? search(m, b, wm, wb, depth - 1)
+      const left = search(a, m, wa, wm, depth - 1)
+      if (left.kind !== 'none') return left
+      return search(m, b, wm, wb, depth - 1)
     }
-    return search(ta, tb, wa0, wb0, 10)
+    const wa0 = this.accelAt(x, y, ta)
+    if (wa0 < -G) return { kind: 'found', t: ta }
+    // Quick whole-interval proof (the common firmly-seated case).
+    const wb0 = this.accelAt(x, y, tb)
+    if (wb0 >= -G && budget-- > 0 && this.wttLowerBound(x, y, ta, tb) >= -G) {
+      return { kind: 'none' }
+    }
+    // Resolve scan subintervals strictly left-to-right.
+    const K = 8
+    let tp = ta; let wp = wa0
+    for (let k = 1; k <= K; k++) {
+      const t = k === K ? tb : ta + ((tb - ta) * k) / K
+      const w = k === K ? wb0 : this.accelAt(x, y, t)
+      const r = search(tp, t, wp, w, 40)
+      if (r.kind !== 'none') return r
+      tp = t; wp = w
+    }
+    return { kind: 'none' }
   }
 
   /** Pre-M6-4A surfAt, kept verbatim as the comparison reference. */

@@ -710,12 +710,18 @@ export class TransientSandSim {
 
   /** First time in [cur, tNew] where the implemented (ODE-mode) wtt at
    *  the seated particle's fixed (x, y) crosses below -G. Delegates to
-   *  the plate's interval-assisted search (M6-11R): subintervals are
-   *  excluded only by a conservative lower bound, so root pairs are
-   *  not missed by sampling (up to the bound's rounding hair and the
-   *  documented recursion floor). */
+   *  the plate's interval-assisted search (M6-11R/M6-12R). 'unknown'
+   *  (budget exhausted, absence unproven) is retried once with a much
+   *  larger budget; if still unknown this throws — silently treating
+   *  it as "no detach" would advance the state on an unproven claim. */
   private detachTimeOde(i: number, cur: number, tNew: number): number | null {
-    return this.plate.firstDetachBelow(this.state.x[i], this.state.y[i], cur, tNew)
+    const x = this.state.x[i]; const y = this.state.y[i]
+    let r = this.plate.firstDetachBelow(x, y, cur, tNew)
+    if (r.kind === 'unknown') r = this.plate.firstDetachBelow(x, y, cur, tNew, 16384)
+    if (r.kind === 'unknown') {
+      throw new Error(`detach search inconclusive for particle ${i} on [${cur}, ${tNew}] (ODE accel mode): absence of a detach root could not be proven within budget`)
+    }
+    return r.kind === 'found' ? r.t : null
   }
 
   /** Advance one awake particle from t to tNew (events, fallback, sleep
@@ -728,10 +734,11 @@ export class TransientSandSim {
         rounds++
         if (st.sitting[i]) {
           this.sittingSteps++
-          if (pl.accelMode === 'ode') {
-            // M6-11 research: ODE wtt is not linear in tau, so the exact
-            // root below does not apply. Interval-assisted search on
-            // the plate instead (see firstDetachBelow).
+          if (pl.odeFormActive()) {
+            // M6-11 research: ODE-form wtt is not linear in tau, so the
+            // exact root below does not apply. Interval-assisted search
+            // on the plate instead (see firstDetachBelow). Also covers
+            // tiny segments, which use the ODE form in every mode.
             const tdOde = this.detachTimeOde(i, cur, tNew)
             if (tdOde === null) {
               pl.heightAccelAt(st.x[i], st.y[i], tNew, S2)

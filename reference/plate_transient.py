@@ -286,10 +286,68 @@ class TransientPlate:
         q, qd = (self._seg[5], self._seg[6]) if self._seg else (self.q, self.qd)
         return float(np.sqrt(np.sum(qd**2 + (self.omega*q)**2)))
 
+    def _force_range(self, ta, tb):
+        """Conservative [min, max] of drive force over [ta, tb]: exact
+        per-event envelope x sine ranges (incl. the overlapping
+        attack/release peak), split at event boundaries. Mirrors TS
+        forceRange (score time == physics time here)."""
+        sig = self.score
+        cuts = [float(ta), float(tb)]
+        for e in sig.events:
+            for key in ("start_s", "end_s"):
+                if ta < e[key] < tb:
+                    cuts.append(float(e[key]))
+        cuts.sort()
+        lo, hi = np.inf, -np.inf
+        def env_at(ev, t):
+            env = 1.0
+            atk, rel = ev.get("attack_s", 0.0), ev.get("release_s", 0.0)
+            if atk > 0 and t < ev["start_s"] + atk:
+                u_ = (t - ev["start_s"])/atk; env = min(env, u_*u_*(3-2*u_))
+            if rel > 0 and t > ev["end_s"] - rel:
+                u_ = (ev["end_s"] - t)/rel; env = min(env, u_*u_*(3-2*u_))
+            return env
+        for a, b in zip(cuts[:-1], cuts[1:]):
+            i, ev = sig.event_at(a)
+            if ev is None:
+                i, ev = sig.event_at(0.5*(a + b))
+            if ev is None:
+                lo = min(lo, 0.0); hi = max(hi, 0.0); continue
+            elo = min(env_at(ev, a), env_at(ev, b))
+            ehi = max(env_at(ev, a), env_at(ev, b))
+            if a < ev["end_s"] - ev.get("release_s", 0.0) and b > ev["start_s"] + ev.get("attack_s", 0.0):
+                ehi = 1.0
+            atk, rel = ev.get("attack_s", 0.0), ev.get("release_s", 0.0)
+            if atk > 0 and rel > 0:
+                tc = (rel*ev["start_s"] + atk*ev["end_s"])/(atk + rel)
+                if a <= tc <= b:
+                    ehi = max(ehi, env_at(ev, tc))
+            elo = max(elo, 0.0); ehi = min(ehi, 1.0)
+            tha = sig._theta0[i] + 2*np.pi*ev["frequency_hz"]*(a - ev["start_s"])
+            thb = sig._theta0[i] + 2*np.pi*ev["frequency_hz"]*(b - ev["start_s"])
+            slo = min(np.sin(tha), np.sin(thb)); shi = max(np.sin(tha), np.sin(thb))
+            if thb - tha >= 2*np.pi:
+                slo, shi = -1.0, 1.0
+            else:
+                k0 = np.ceil((tha - np.pi/2)/(2*np.pi))
+                if np.pi/2 + 2*np.pi*k0 <= thb:
+                    shi = 1.0
+                k1 = np.ceil((tha - 3*np.pi/2)/(2*np.pi))
+                if 3*np.pi/2 + 2*np.pi*k1 <= thb:
+                    slo = -1.0
+            plo = elo*slo if slo >= 0 else ehi*slo
+            phi = ehi*shi if shi >= 0 else elo*shi
+            fpk = ev["forcePeak_N"]
+            plo, phi = (fpk*plo, fpk*phi) if fpk >= 0 else (fpk*phi, fpk*plo)
+            lo = min(lo, plo); hi = max(hi, phi)
+        for t in (float(ta), float(tb)):
+            f = sig.force_peak_at(t)*sig.u(t)
+            lo = min(lo, f); hi = max(hi, f)
+        return lo, hi
+
     def wtt_lower_bound(self, x, y, ta, tb):
         """Conservative lower bound of implemented wtt at fixed (x, y)
-        over [ta, tb] in the current segment (mirrors TS wttLowerBound;
-        force bound here is the loose |F| <= max overlapping forcePeak).
+        over [ta, tb] in the current segment (mirrors TS wttLowerBound).
         """
         if self._seg is None:
             return -np.inf
@@ -321,14 +379,12 @@ class TransientPlate:
             vv = (A*sv*sv + B*sv + C)/h
             qdmin = np.where(valid, np.minimum(qdmin, vv), qdmin)
             qdmax = np.where(valid, np.maximum(qdmax, vv), qdmax)
-        fpk = 0.0
-        for e in self.score.events:
-            if e["start_s"] <= tb and e["end_s"] >= ta:
-                fpk = max(fpk, abs(e["forcePeak_N"]))
-        d_abs = np.abs(self.phi_drive/self.mass)*fpk
+        flo, fhi = self._force_range(float(ta), float(tb))
+        c = self.phi_drive/self.mass
+        dlo = np.minimum(c*flo, c*fhi); dhi = np.maximum(c*flo, c*fhi)
         w = self.omega
-        lo = -d_abs - 2*self.zeta*w*qdmax - w*w*sqmax
-        hi = d_abs - 2*self.zeta*w*qdmin - w*w*sqmin
+        lo = dlo - 2*self.zeta*w*qdmax - w*w*sqmax
+        hi = dhi - 2*self.zeta*w*qdmin - w*w*sqmin
         wd = 1e-9*(1.0 + np.abs(lo) + np.abs(hi))
         lo -= wd; hi += wd
         phis = np.array([float(_phi_grad(self.modes[d["mode"]], d["kind"],
@@ -336,12 +392,23 @@ class TransientPlate:
                          for d in self.dofs])
         return float(np.minimum(phis*lo, phis*hi).sum())
 
-    def first_detach_below(self, x, y, ta, tb):
-        """First t in [ta, tb] with implemented wtt < -G at fixed (x, y),
-        or None. Scan fast path, then interval-bound refinement with a
-        bounded budget (mirrors TS firstDetachBelow)."""
+    def ode_form_active(self):
+        """True when the current segment's acceleration uses the ODE
+        form: explicit 'ode' mode or the tiny-segment (h < 1e-7)
+        stable fallback. Linear-root detach logic must not run then."""
+        return self.accel_mode == "ode" or (
+            self._seg is not None and (self._seg[1] - self._seg[0]) < 1e-7)
+
+    def first_detach_below(self, x, y, ta, tb, budget_in=2048):
+        """First t in [ta, tb] with implemented wtt < -G at fixed (x, y).
+
+        Tri-state return (status, t): ("found", t) first crossing in
+        time order; ("none", None) absence proven by interval bounds;
+        ("unknown", None) budget exhausted — absence NOT proven and
+        must never be treated as "none" (mirrors TS firstDetachBelow,
+        M6-12R). Scan subintervals resolve strictly left-to-right."""
         if self._seg is None:
-            return None
+            return ("unknown", None)
         wfun = lambda t: float(self.surf_at(np.array([x]), np.array([y]), float(t))[4][0])
         def bisect(a, b):
             lo, hi = a, b
@@ -352,39 +419,49 @@ class TransientPlate:
                 else:
                     hi = m
             return 0.5*(lo + hi)
-        wa0 = wfun(ta)
-        if wa0 < -G:
-            return float(ta)
-        tp = float(ta); wb0 = wa0
-        for k in range(1, 9):
-            t = ta + (tb - ta)*(k/8.0)
-            w = wfun(t)
-            if w < -G:
-                return bisect(tp, t)
-            tp = t; wb0 = w
-        budget = [48]
+        budget = [budget_in]
         def search(a, b, wa, wb, depth):
             if wb < -G:
-                if depth <= 0 or b - a < 1e-10:
-                    return bisect(a, b)
+                if depth <= 0 or b - a < 1e-9:
+                    return ("found", bisect(a, b))
                 m = 0.5*(a + b); wm = wfun(m)
-                if wm < -G:
-                    return search(a, m, wa, wm, depth - 1)
-                r = search(a, m, wa, wm, depth - 1)
-                return r if r is not None else search(m, b, wm, wb, depth - 1)
+                left = search(a, m, wa, wm, depth - 1)
+                if left[0] == "found":
+                    return left
+                if left[0] == "unknown":
+                    if b - a < 1e-8:
+                        return ("found", bisect(a, b))
+                    return left
+                return search(m, b, wm, wb, depth - 1)
             if budget[0] <= 0:
-                return None
+                return ("unknown", None)
             budget[0] -= 1
             if self.wtt_lower_bound(x, y, a, b) >= -G:
-                return None
-            if depth <= 0 or b - a < 1e-10:
-                return None
+                return ("none", None)
+            if depth <= 0 or b - a < 1e-12:
+                return ("unknown", None)
             m = 0.5*(a + b); wm = wfun(m)
-            if wm < -G:
-                return search(a, m, wa, wm, depth - 1)
-            r = search(a, m, wa, wm, depth - 1)
-            return r if r is not None else search(m, b, wm, wb, depth - 1)
-        return search(float(ta), float(tb), wa0, wb0, 10)
+            left = search(a, m, wa, wm, depth - 1)
+            if left[0] != "none":
+                return left
+            return search(m, b, wm, wb, depth - 1)
+        wa0 = wfun(ta)
+        if wa0 < -G:
+            return ("found", float(ta))
+        wb0 = wfun(tb)
+        if wb0 >= -G and budget[0] > 0:
+            budget[0] -= 1
+            if self.wtt_lower_bound(x, y, float(ta), float(tb)) >= -G:
+                return ("none", None)
+        tp = float(ta); wp = wa0
+        for k in range(1, 9):
+            t = float(tb) if k == 8 else ta + (tb - ta)*(k/8.0)
+            w = wb0 if k == 8 else wfun(t)
+            r = search(tp, float(t), wp, w, 40)
+            if r[0] != "none":
+                return r
+            tp = float(t); wp = w
+        return ("none", None)
 
     def lookahead_ranges(self, from_t, window, dt_at):
         """Exact per-DOF Hermite q/qdd ranges over a future window, from a
@@ -718,7 +795,7 @@ class TransientSandSim:
                     di = si[det]; sitting[di] = False
                     vz[di] = uz[det]; z[di] = hs[det] + 1e-9
                     cur[si] = t_new
-                elif pl.accel_mode == "ode":
+                elif pl.ode_form_active():
                     # M6-11 research: ODE wtt is not linear in time, so the
                     # exact root below does not apply. Interval-assisted
                     # per-particle search on the plate (mirrors TS
@@ -726,9 +803,18 @@ class TransientSandSim:
                     hs1,_,_,_, _w1 = pl.surf_at(x[si], y[si], np.full(si.size, t_new))
                     td = np.full(si.size, np.nan)
                     for li, gi in enumerate(si):
-                        r = pl.first_detach_below(float(x[gi]), float(y[gi]),
-                                                  float(cur[gi]), t_new)
-                        if r is not None:
+                        status, r = pl.first_detach_below(float(x[gi]), float(y[gi]),
+                                                          float(cur[gi]), t_new)
+                        if status == "unknown":
+                            status, r = pl.first_detach_below(float(x[gi]), float(y[gi]),
+                                                              float(cur[gi]), t_new,
+                                                              budget_in=16384)
+                        if status == "unknown":
+                            raise RuntimeError(
+                                f"detach search inconclusive for particle {gi} "
+                                f"on [{float(cur[gi])}, {t_new}] (ODE accel mode): "
+                                "absence of a detach root could not be proven")
+                        if status == "found":
                             td[li] = r
                     stay = np.isnan(td)
                     if stay.any():

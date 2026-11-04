@@ -136,20 +136,59 @@ def test_ode_wtt_lower_bound_and_finder(basis):
     for _ in range(20):
         plate.begin_step(seg_t, seg_t + dt)
         for xy in ((0.02, 0.01), (-0.04, 0.03)):
-            got = plate.first_detach_below(xy[0], xy[1], seg_t, seg_t + dt)
+            status, got = plate.first_detach_below(xy[0], xy[1], seg_t, seg_t + dt)
             ts = np.linspace(seg_t, seg_t + dt, 2001)
             ws = plate.surf_at(np.full(ts.size, xy[0]), np.full(ts.size, xy[1]), ts)[4]
             below = np.where(ws < -pt.G)[0]
+            assert status != "unknown"
             if below.size == 0:
-                assert got is None
+                assert status == "none"
             else:
                 found += 1
-                assert got is not None
+                assert status == "found"
                 assert abs(got - float(ts[below[0]])) < dt / 2000 + 2e-6
         seg_t += dt
         if found >= 3:
             break
     assert found > 0
+
+
+def _rest_plate(basis, events, phase, mode="ode"):
+    plate = pt.TransientPlate(basis, pt.ScoreSignal(events, initial_phase=phase),
+                              drive_xy=(0.0, 0.0))
+    plate.accel_mode = mode
+    return plate
+
+
+def test_m612r_first_detach_is_first_across_two_short_events(basis):
+    # Mirrors the TS counterexample: two 10 N events (1-2 us, 18-19 us)
+    # in one nominal step; the first root must win.
+    plate = _rest_plate(basis, [
+        dict(start_s=1e-6, end_s=2e-6, frequency_hz=152.0, forcePeak_N=10.0,
+             attack_s=0.0, release_s=0.0),
+        dict(start_s=18e-6, end_s=19e-6, frequency_hz=152.0, forcePeak_N=10.0,
+             attack_s=0.0, release_s=0.0),
+    ], -np.pi / 2)
+    dt = 1.0 / (44 * 152)
+    plate.begin_step(0.0, dt)
+    w15 = float(plate.surf_at(np.array([0.02]), np.array([0.01]), 1.5e-6)[4][0])
+    assert w15 < -pt.G
+    status, t = plate.first_detach_below(0.02, 0.01, 0.0, dt)
+    assert status == "found"
+    assert 1e-6 <= t < 2e-6
+    status0, _ = plate.first_detach_below(0.02, 0.01, 0.0, dt, budget_in=0)
+    assert status0 == "unknown"
+
+
+def test_m612r_tiny_segment_uses_ode_form_in_hermite_mode(basis):
+    plate = _rest_plate(basis, [
+        dict(start_s=10e-9, end_s=20e-9, frequency_hz=152.0, forcePeak_N=10.0,
+             attack_s=0.0, release_s=0.0),
+    ], np.pi / 2, mode="hermite")
+    plate.begin_step(0.0, 9e-8)
+    assert plate.ode_form_active()
+    w = float(plate.surf_at(np.array([0.02]), np.array([0.01]), 15e-9)[4][0])
+    assert abs(w) > 100
 
 
 def test_default_mode_is_hermite(basis):

@@ -263,16 +263,98 @@ describe('M6-11R interval-assisted detach search', () => {
       for (const [x, y] of [[0.02, 0.01], [-0.04, 0.03], [0.0, 0.0]] as const) {
         const got = plate.firstDetachBelow(x, y, segT, segT + dt)
         const want = denseFirst(x, y, segT)
-        if (want === null) expect(got).toBeNull()
+        expect(got.kind).not.toBe('unknown')
+        if (want === null) expect(got.kind).toBe('none')
         else {
           rootsFound++
-          expect(got).not.toBeNull()
-          expect(Math.abs((got as number) - want)).toBeLessThan(2e-6)
+          expect(got.kind).toBe('found')
+          if (got.kind === 'found') expect(Math.abs(got.t - want)).toBeLessThan(2e-6)
         }
       }
       segT += dt
     }
     expect(rootsFound).toBeGreaterThan(0)
+  })
+
+  // M6-12R review counterexamples (PR #14): envelope peak, tiny-segment
+  // mask, first-root ordering. Each is a from-rest plate so the only
+  // acceleration is the direct forcing term.
+  const evScore = (events: PerformanceScore['events'], phase: number): PerformanceScore => ({
+    schema: 'physicymatics.score.v1', duration_s: 30, initialPhase_rad: phase, audioGain: 0.2, events,
+  })
+
+  it('M6-12R: wttLowerBound includes the overlapping attack/release envelope peak', () => {
+    // Event 1-2 us, F=-0.445 N, attack 0.8 us, release 0.7 us (ramps
+    // overlap; envelope peaks at their crossing, below 1).
+    const score = evScore([{
+      start_s: 1e-6, end_s: 2e-6, frequency_hz: 152, forcePeak_N: -0.445,
+      attack_s: 0.8e-6, release_s: 0.7e-6,
+    }], Math.PI / 2)
+    const plate = new TransientPlate(score, [0, 0])
+    plate.accelMode = 'ode'
+    const dt = 1 / (44 * 152)
+    plate.beginStep(0, dt)
+    const ta = 1.5e-6; const tb = 1.5625e-6
+    const lb = plate.wttLowerBound(0.02, 0.01, ta, tb)
+    let trueMin = Infinity
+    for (let k = 0; k <= 400; k++) {
+      trueMin = Math.min(trueMin, plate.accelAt(0.02, 0.01, ta + ((tb - ta) * k) / 400))
+    }
+    expect(trueMin).toBeLessThan(-G) // the counterexample really crosses
+    expect(lb).toBeLessThanOrEqual(trueMin + 1e-6)
+    const r = plate.firstDetachBelow(0.02, 0.01, 0, dt)
+    expect(r.kind).toBe('found')
+    if (r.kind === 'found') {
+      expect(r.t).toBeGreaterThan(1.4e-6)
+      expect(r.t).toBeLessThan(1.7e-6)
+    }
+  })
+
+  it('M6-12R: tiny segments keep directly forced DOFs live in hermite mode', () => {
+    // 10 N event spanning 10-20 ns inside a 90 ns segment: Hermite
+    // endpoints stay zero, but the tiny-segment ODE-form acceleration
+    // must see the forcing in accelAt as well as surfAt.
+    const score = evScore([{
+      start_s: 10e-9, end_s: 20e-9, frequency_hz: 152, forcePeak_N: 10,
+      attack_s: 0, release_s: 0,
+    }], Math.PI / 2)
+    const plate = new TransientPlate(score, [0, 0])
+    expect(plate.accelMode).toBe('hermite')
+    plate.beginStep(0, 9e-8)
+    expect(plate.odeFormActive()).toBe(true)
+    const out = new Float64Array(5)
+    plate.surfAt(0.02, 0.01, 15e-9, out)
+    const a = plate.accelAt(0.02, 0.01, 15e-9)
+    expect(Math.abs(out[4])).toBeGreaterThan(100)
+    expect(a).toBe(out[4])
+    const out2 = new Float64Array(2)
+    plate.heightAccelAt(0.02, 0.01, 15e-9, out2)
+    expect(out2[1]).toBe(out[4])
+  })
+
+  it('M6-12R: firstDetachBelow returns the FIRST root across two short events', () => {
+    // Two 10 N events (1-2 us and 18-19 us) inside one nominal step.
+    // The first episode sits between scan points; the old fast path
+    // returned the second event's crossing (18 us).
+    const score = evScore([
+      { start_s: 1e-6, end_s: 2e-6, frequency_hz: 152, forcePeak_N: 10, attack_s: 0, release_s: 0 },
+      { start_s: 18e-6, end_s: 19e-6, frequency_hz: 152, forcePeak_N: 10, attack_s: 0, release_s: 0 },
+    ], -Math.PI / 2)
+    const plate = new TransientPlate(score, [0, 0])
+    plate.accelMode = 'ode'
+    const dt = 1 / (44 * 152)
+    plate.beginStep(0, dt)
+    expect(plate.accelAt(0.02, 0.01, 1.5e-6)).toBeLessThan(-G)
+    const r = plate.firstDetachBelow(0.02, 0.01, 0, dt)
+    expect(r.kind).toBe('found')
+    if (r.kind === 'found') {
+      expect(r.t).toBeGreaterThanOrEqual(1e-6)
+      expect(r.t).toBeLessThan(2e-6)
+    }
+    // 'unknown' is distinguishable and only appears when the budget
+    // is deliberately starved; it is never reported as 'none'.
+    const starved = plate.firstDetachBelow(0.02, 0.01, 0, dt, 0)
+    expect(starved.kind).toBe('unknown')
   })
 })
 
