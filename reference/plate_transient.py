@@ -1039,5 +1039,13 @@ class TransientSandSim:
                 break
             self.step(min(self.dt_now(), rem))
         if self.t < t_target:
+            # Snap BOTH clocks: the invariant at every step boundary is
+            # plate.t == sim.t with the modal state taken as the state
+            # at that time. The skipped evolution is <= the remnant
+            # (<= ~1e-12 s, the FP accumulation that created it), and
+            # canonical step()-driven runs never take this branch.
+            # Advancing only self.t desynchronizes the clocks and the
+            # next begin_step assertion fails (M6-13R review).
             self.t = t_target
+            self.plate.t = t_target
         self.materialize_all()

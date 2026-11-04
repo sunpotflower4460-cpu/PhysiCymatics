@@ -942,7 +942,13 @@ export class TransientSandSim {
       if (rem <= Math.max(1e-12, this.dtNow() * 1e-9)) break
       this.step(Math.min(this.dtNow(), rem))
     }
-    if (this.t < tTarget) this.t = tTarget
+    if (this.t < tTarget) {
+      // Snap BOTH clocks (invariant: plate.t == sim.t at every step
+      // boundary; the skipped plate evolution is <= the FP remnant).
+      // Advancing only the sim clock desynchronizes them (M6-13R).
+      this.t = tTarget
+      this.plate.t = tTarget
+    }
     this.materializeAll()
   }
 

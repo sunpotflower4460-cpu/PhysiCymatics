@@ -205,6 +205,21 @@ describe('M6-11R degenerate tiny final step (production bugfix)', () => {
     expect(adv.nBounce).toBe(stepped.nBounce)
   })
 
+  it('M6-13R: consecutive tiny advanceTo targets keep plate/sim clocks synchronized', () => {
+    const sim = createTransientSim(singleToneScore(152, calibratedForceN(), 30), 5, 7)
+    sim.advanceTo(0.75e-12)
+    expect(sim.t).toBe(0.75e-12)
+    expect(sim.plate.t).toBe(sim.t)
+    sim.advanceTo(1.5e-12)
+    expect(sim.plate.t).toBe(sim.t)
+    sim.advanceTo(1e-12) // reversed target: no-op
+    expect(sim.t).toBe(1.5e-12)
+    expect(sim.plate.t).toBe(sim.t)
+    sim.step()
+    expect(sim.plate.t).toBe(sim.t)
+    for (const z of sim.state.z) expect(Number.isFinite(z)).toBe(true)
+  })
+
   it('tiny segments evaluate sane acceleration (no 1/h^2 garbage)', () => {
     const plate = excitedPlate('hermite')
     plate.beginStep(0, 1e-12)

@@ -117,6 +117,28 @@ def test_advance_to_grid_target_no_degenerate_step(basis):
     assert adv.n_bounce == stepped.n_bounce
 
 
+def test_advance_to_tiny_targets_keep_clocks_synchronized(basis):
+    # M6-13R regression: consecutive sub-threshold advance_to targets
+    # snapped only the sim clock, leaving plate.t behind; the next
+    # ordinary step then failed begin_step's clock assertion.
+    score = pt.ScoreSignal([dict(start_s=0.0, end_s=60.0, frequency_hz=152.0,
+                                  forcePeak_N=1.0, attack_s=0.0, release_s=0.0)])
+    plate = pt.TransientPlate(basis, score)
+    st, _ = sb.initial_state(basis["modes"][0], 5, seed=7)
+    sim = pt.TransientSandSim(plate, st, sleep_enabled=True)
+    sim.advance_to(0.75e-12)
+    assert sim.t == sim.plate.t == 0.75e-12
+    sim.advance_to(1.5e-12)
+    assert sim.t == sim.plate.t == 1.5e-12
+    # Reversed target is a no-op (no time travel, clocks stay synced).
+    sim.advance_to(1e-12)
+    assert sim.t == sim.plate.t == 1.5e-12
+    # Ordinary stepping afterwards must work and stay finite.
+    sim.step()
+    assert sim.t == sim.plate.t
+    assert np.all(np.isfinite(sim.state.z))
+
+
 def test_ode_wtt_lower_bound_and_finder(basis):
     plate = _plate(basis, "ode", force=1.0)
     dt = 1.0 / (44 * 152)
