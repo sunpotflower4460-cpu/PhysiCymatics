@@ -258,3 +258,43 @@ describe('M6-13 seated friction formulation', () => {
     expect(seatedVz(st, o)).toBeCloseTo(Math.tan(th) * 0.2, 15)
   })
 })
+
+describe('M6-14R slip onset and event ordering', () => {
+  it('slip from rest feels kinetic friction from the first step', () => {
+    // h = 0.5 x, rest, muS=0.1 (breaks), muK=0.2, one dt=0.1 step.
+    // Analytic: a_slope = g(sin - muK cos), vx = -a_slope cos t.
+    const th = Math.atan(0.5)
+    const st: SeatedState = { x: 0, y: 0, vx: 0, vy: 0 }
+    const r = stepSeated(st, incline(th), { muS: 0.1, muK: 0.2 }, 0, 0.1)
+    expect(r.mode).toBe('slip')
+    const vxExact = -G * (Math.sin(th) - 0.2 * Math.cos(th)) * Math.cos(th) * 0.1
+    expect(st.vx).toBeCloseTo(vxExact, 6) // ~ -0.23544
+    expect(st.vx).toBeCloseTo(-0.23544, 4)
+  })
+
+  it('stop precedes detach inside one step (event ordering)', () => {
+    // Flat surface falling away: h(t) with htt = -g t/0.02, so the
+    // normal reaches zero at t where g+htt=0 -> t=0.02 (starting at
+    // htt=0). Grain sliding at 0.01 m/s stops at ~v/(muK g)=5.1ms,
+    // BEFORE the detach. Correct order: stop (stick) then detach;
+    // the step must end stuck at the analytic stop point when the
+    // detach is reported, not mid-slide past it.
+    const surf: SurfaceFn = (_x, _y, t, o) => {
+      o.h = -G * t * t * t / (6 * 0.02); o.hx = 0; o.hy = 0
+      o.hxx = 0; o.hxy = 0; o.hyy = 0
+      o.ht = -G * t * t / (2 * 0.02); o.htt = -G * t / 0.02
+      o.htx = 0; o.hty = 0
+    }
+    const st: SeatedState = { x: 0, y: 0, vx: 0.01, vy: 0 }
+    const r = stepSeated(st, surf, { muS: 0.3, muK: 0.2 }, 0, 0.03)
+    expect(r.mode).toBe('detach')
+    // Detach at t=0.02; grain stopped before that (vx ~ 0, position
+    // near the flat-plate stop distance, slightly less friction as
+    // normal decays, so within [stop_flat, 2*stop_flat]).
+    expect(r.advanced).toBeCloseTo(0.02, 3)
+    expect(Math.abs(st.vx)).toBeLessThan(1e-6)
+    const stopFlat = 0.01 * 0.01 / (2 * 0.2 * G)
+    expect(st.x).toBeGreaterThan(stopFlat * 0.9)
+    expect(st.x).toBeLessThan(stopFlat * 2.2)
+  })
+})

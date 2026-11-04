@@ -164,7 +164,8 @@ function kineticAccel(
     // direction would flip friction inside the same RK4 step and
     // corrupt event localization. Keep the step-initial direction
     // (continuation) whenever the stage direction has reversed.
-    if (dx * dirHint[0] + dy * dirHint[1] + dz * dirHint[2] <= 0) {
+    const hintMag = Math.hypot(dirHint[0], dirHint[1], dirHint[2])
+    if (hintMag > 0 && dx * dirHint[0] + dy * dirHint[1] + dz * dirHint[2] <= 0) {
       [dx, dy, dz] = dirHint
     }
   } else {
@@ -181,8 +182,20 @@ function rk4Advance(
 ): { state: SeatedState; sawDetach: boolean } {
   surf(s0.x, s0.y, t, sf)
   const vz0 = sf.hx * s0.vx + sf.hy * s0.vy
-  const sp0 = Math.hypot(s0.vx, s0.vy, vz0) || 1
-  const dirHint: [number, number, number] = [s0.vx / sp0, s0.vy / sp0, vz0 / sp0]
+  const sp0 = Math.hypot(s0.vx, s0.vy, vz0)
+  let dirHint: [number, number, number]
+  if (sp0 > 0) {
+    dirHint = [s0.vx / sp0, s0.vy / sp0, vz0 / sp0]
+  } else {
+    // Slip onset from rest (M6-14R review): the zero velocity gives
+    // no friction direction. Use the impending-slip acceleration —
+    // the direction motion is about to take — so kinetic friction
+    // opposes it from the first stage.
+    const a = seatedAccel(s0, surf, p, t)
+    const az = sf.hx * a.ax + sf.hy * a.ay
+    const am = Math.hypot(a.ax, a.ay, az)
+    dirHint = am > 0 ? [a.ax / am, a.ay / am, az / am] : [0, 0, 0]
+  }
   let sawDetach = false
   const deriv = (s2: SeatedState, tt: number): [number, number, number, number] => {
     const a = kineticAccel(s2, surf, p, tt, dirHint)
@@ -302,8 +315,12 @@ export function stepSeated(
       return { mode: 'slip', advanced: dt }
     }
 
+    // Event ordering (M6-14R review): when both a stop and a detach
+    // occur inside the step, whichever happens FIRST must be
+    // processed; the later event belongs to a different contact
+    // state. Localize both candidate fractions and take the earlier.
+    let fracDetach = Infinity
     if (detachInside) {
-      // Bisect the fraction whose integrated state first detaches.
       let lo = 0; let hi = 1
       for (let it = 0; it < 50; it++) {
         const mid = 0.5 * (lo + hi)
@@ -311,18 +328,24 @@ export function stepSeated(
         const aa = seatedAccel(r.state, surf, p, tc + rem * mid)
         if (r.sawDetach || aa.mode === 'detach') hi = mid; else lo = mid
       }
-      const r = rk4Advance(start, surf, p, tc, rem * hi)
+      fracDetach = hi
+    }
+    let fracStop = Infinity
+    if (stopInside) {
+      let lo = 0; let hi = 1
+      for (let it = 0; it < 60; it++) {
+        const mid = 0.5 * (lo + hi)
+        const r = rk4Advance(start, surf, p, tc, rem * mid)
+        if (signedSpeed(r.state) > 0) lo = mid; else hi = mid
+      }
+      fracStop = hi
+    }
+    if (fracDetach <= fracStop) {
+      const r = rk4Advance(start, surf, p, tc, rem * fracDetach)
       Object.assign(st, r.state)
-      return { mode: 'detach', advanced: advanced + rem * hi }
+      return { mode: 'detach', advanced: advanced + rem * fracDetach }
     }
-
-    // Stopping event: bisect the fraction where signed speed hits 0.
-    let lo = 0; let hi = 1
-    for (let it = 0; it < 60; it++) {
-      const mid = 0.5 * (lo + hi)
-      const r = rk4Advance(start, surf, p, tc, rem * mid)
-      if (signedSpeed(r.state) > 0) lo = mid; else hi = mid
-    }
+    const hi = fracStop
     const r = rk4Advance(start, surf, p, tc, rem * hi)
     surf(r.state.x, r.state.y, tc + rem * hi, sf)
     if (tangentialSpeed(r.state, sf) > 1e-9) {
