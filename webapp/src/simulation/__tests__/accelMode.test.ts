@@ -428,3 +428,23 @@ describe('M6-14R setDrive cache invalidation', () => {
     expect(out2[1]).toBe(after)
   })
 })
+
+describe('M6-14R setScore cache invalidation', () => {
+  it('replacing the score mid-segment refreshes ode acceleration', () => {
+    const dt = 1 / (44 * 152)
+    const plate = new TransientPlate(singleToneScore(152, 0, 30), [0, 0])
+    plate.accelMode = 'ode'
+    plate.beginStep(0, dt)
+    expect(plate.accelAt(0.02, 0.01, dt)).toBe(0)
+    plate.setScore({
+      schema: 'physicymatics.score.v1', duration_s: 30,
+      initialPhase_rad: -Math.PI / 2, audioGain: 0.2,
+      events: [{ start_s: 0, end_s: 30, frequency_hz: 152, forcePeak_N: 10, attack_s: 0, release_s: 0 }],
+    }, dt)
+    const a = plate.accelAt(0.02, 0.01, dt)
+    const out = new Float64Array(5)
+    plate.surfAt(0.02, 0.01, dt, out)
+    expect(a).toBe(out[4])
+    expect(Math.abs(a)).toBeGreaterThan(1)
+  })
+})

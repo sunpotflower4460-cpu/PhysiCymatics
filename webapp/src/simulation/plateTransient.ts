@@ -98,13 +98,7 @@ export class TransientPlate {
   set accelMode(m: 'hermite' | 'ode') {
     if (m === this._accelMode) return
     this._accelMode = m
-    this.tauSlotTau.fill(NaN)
-    this.tauSlotTauQH.fill(NaN)
-    // The live-DOF mask criterion depends on the mode (forced DOFs in
-    // 'ode'); rebuild it for the current segment so a mid-segment
-    // switch cannot leave evaluation paths summing different terms.
-    const seg = this.seg
-    if (seg) this.computeLiveMask(seg.q0, seg.qd0, seg.q1, seg.qd1, seg.t0, seg.t1)
+    this.invalidateAccelCaches()
   }
 
   private computeLiveMask(q0: Float64Array, qd0: Float64Array, q1: Float64Array, qd1: Float64Array, t0: number, t1: number): void {
@@ -186,6 +180,18 @@ export class TransientPlate {
     return kind === 'cos' ? R * cm : R * sm
   }
 
+  /** Invalidate tau caches and rebuild the live-DOF mask for the
+   *  current segment. Required whenever anything the ODE
+   *  acceleration or the mask's forced-DOF criterion depends on
+   *  changes mid-segment: drive position (phiDrive), score/epoch
+   *  (force events), or accel mode (M6-14R reviews). */
+  private invalidateAccelCaches(): void {
+    this.tauSlotTau.fill(NaN)
+    this.tauSlotTauQH.fill(NaN)
+    const seg = this.seg
+    if (seg) this.computeLiveMask(seg.q0, seg.qd0, seg.q1, seg.qd1, seg.t0, seg.t1)
+  }
+
   setDrive(x: number, y: number): void {
     const changed = this.driveXY[0] !== x || this.driveXY[1] !== y
     this.driveXY = [x, y]
@@ -196,21 +202,14 @@ export class TransientPlate {
       const m = this.modes[d.mode].m
       this.phiDrive[j] = this.phi(d.mode, d.kind, idx, Math.cos(m * th), Math.sin(m * th))
     })
-    if (changed) {
-      // phiDrive feeds the live-DOF mask's forced-DOF criterion and the
-      // ODE acceleration; a stale mask/cache after a position change
-      // would drop newly forced DOFs (M6-14R review). Rebuild both.
-      this.tauSlotTau.fill(NaN)
-      this.tauSlotTauQH.fill(NaN)
-      const seg = this.seg
-      if (seg) this.computeLiveMask(seg.q0, seg.qd0, seg.q1, seg.qd1, seg.t0, seg.t1)
-    }
+    if (changed) this.invalidateAccelCaches()
   }
 
   /** Replace the score at physics time atTime; q/qd are preserved. */
   setScore(score: PerformanceScore, atTime: number): void {
     this.signal = new ScoreSignal(score)
     this.epoch = atTime
+    this.invalidateAccelCaches()
   }
 
   /** Switch to a single tone at freqHz, phase-continuous with the current
