@@ -350,7 +350,14 @@ export function stepSeated(
     surf(r.state.x, r.state.y, tc + rem * hi, sf)
     if (tangentialSpeed(r.state, sf) > 1e-9) {
       // Direction rotated through perpendicular without stopping;
-      // not a stop event. Accept the trial step.
+      // not a stop event. But a pending detachment inside the step
+      // must still be processed (M6-14R review) — do not advance
+      // through it with the whole trial step.
+      if (Number.isFinite(fracDetach)) {
+        const rd = rk4Advance(start, surf, p, tc, rem * fracDetach)
+        Object.assign(st, rd.state)
+        return { mode: 'detach', advanced: advanced + rem * fracDetach }
+      }
       Object.assign(st, trial.state)
       return { mode: 'slip', advanced: dt }
     }

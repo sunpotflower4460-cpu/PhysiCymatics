@@ -298,3 +298,21 @@ describe('M6-14R slip onset and event ordering', () => {
     expect(st.x).toBeLessThan(stopFlat * 2.2)
   })
 })
+
+describe('M6-14R false-stop keeps pending detach', () => {
+  it('direction rotation does not swallow a detachment', () => {
+    // Slope that also falls away: normal reaches zero at t=0.02.
+    // Velocity direction rotates (signed speed crosses zero)
+    // without the grain actually stopping.
+    const surf: SurfaceFn = (x, _y, t, o) => {
+      o.h = 0.5 * x - G * t * t * t / (6 * 0.02); o.hx = 0.5; o.hy = 0
+      o.hxx = 0; o.hxy = 0; o.hyy = 0
+      o.ht = -G * t * t / (2 * 0.02); o.htt = -G * t / 0.02
+      o.htx = 0; o.hty = 0
+    }
+    const st: SeatedState = { x: 0, y: 0, vx: 0.01, vy: 0.01 }
+    const r = stepSeated(st, surf, { muS: 0, muK: 0 }, 0, 0.03)
+    expect(r.mode).toBe('detach')
+    expect(r.advanced).toBeCloseTo(0.02, 3)
+  })
+})
