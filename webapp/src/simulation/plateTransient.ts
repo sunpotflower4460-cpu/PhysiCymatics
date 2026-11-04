@@ -5,6 +5,7 @@
 import basisData from '../data/plate_modes_transient.json'
 import { ScoreSignal, type PerformanceScore, type DriveEvent } from './sequence'
 import type { SurfaceField } from './seatedFriction'
+import type { SurfaceFieldDyn } from './rollingDynamic'
 import { G } from './surface'
 
 interface ModeRow { m: number; root_idx: number; f_hz: number; M_kg: number; R: number[]; dR_drho: number[] }
@@ -719,6 +720,99 @@ export class TransientPlate {
    *  only the spatial shape evaluation differs, so differences vs
    *  surfAt isolate the geometry representation. out = same layout
    *  as surfAt [h, hx, hy, wt, wtt]. */
+  /** M6-17: consistent field (value/gradient/Hessian) summed with
+   *  a chosen modal coefficient set: q (h), qd (ht), or qdd (htt).
+   *  Same spatial math as surfaceFieldConsistent. */
+  private evalFieldWith(
+    x: number, y: number, tau: number, kind: 'q' | 'qd' | 'qdd',
+    out: { w: number; wx: number; wy: number; hxx: number; hxy: number; hyy: number },
+  ): void {
+    out.w = 0; out.wx = 0; out.wy = 0; out.hxx = 0; out.hxy = 0; out.hyy = 0
+    if (!this.seg) return
+    const base = this.modalCoeffs(tau)
+    const coef = kind === 'q' ? this.tauQ : kind === 'qd' ? this.tauQd : this.tauQdd
+    const r = Math.hypot(x, y)
+    const ri = new Float64Array(3)
+    if (r < 1e-12) {
+      let lastMode = -1; let R = 0; let dR = 0; let ddR = 0
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        if (mi !== lastMode) {
+          this.radialInterp(mi, 0, ri)
+          R = ri[0]; dR = ri[1] / this.a; ddR = ri[2] / (this.a * this.a)
+          lastMode = mi
+        }
+        const q = coef[base + j]
+        if (m === 0) { out.w += q * R; out.hxx += q * ddR; out.hyy += q * ddR }
+        else if (m === 1) {
+          if (this.dofCos[j] === 1) out.wx += q * dR; else out.wy += q * dR
+        } else if (m === 2) {
+          if (this.dofCos[j] === 1) { out.hxx += q * ddR; out.hyy -= q * ddR }
+          else out.hxy += q * ddR
+        }
+      }
+      return
+    }
+    const rs = r < 1e-9 ? 1e-9 : r
+    const c = x / rs; const sn = y / rs
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
+    for (let m = 2; m <= 4; m++) {
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
+    }
+    let lastMode = -1; let R = 0; let dR = 0; let ddR = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const mi = this.dofMode[j]; const m = this.dofM[j]
+      if (mi !== lastMode) {
+        this.radialInterp(mi, rs / this.a, ri)
+        R = ri[0]; dR = ri[1] / this.a; ddR = ri[2] / (this.a * this.a)
+        lastMode = mi
+      }
+      const cm = m === 0 ? 1 : CM[m]; const sm = m === 0 ? 0 : SM[m]
+      const isCos = m === 0 || this.dofCos[j] === 1
+      const Th = m === 0 ? 1 : isCos ? cm : sm
+      const ThT = m === 0 ? 0 : isCos ? -m * sm : m * cm
+      const ThTT = m === 0 ? 0 : -m * m * Th
+      const W = R * Th
+      const Wr = dR * Th
+      const Wt = (R * ThT) / rs
+      const Wx = Wr * c - Wt * sn
+      const Wy = Wr * sn + Wt * c
+      const Hrr = ddR * Th
+      const Hrt = (dR * ThT) / rs - (R * ThT) / (rs * rs)
+      const Htt = (R * ThTT) / (rs * rs) + dR * Th / rs
+      const q = coef[base + j]
+      out.w += q * W
+      out.wx += q * Wx; out.wy += q * Wy
+      out.hxx += q * (Hrr * c * c - 2 * Hrt * c * sn + Htt * sn * sn)
+      out.hyy += q * (Hrr * sn * sn + 2 * Hrt * c * sn + Htt * c * c)
+      out.hxy += q * ((Hrr - Htt) * c * sn + Hrt * (c * c - sn * sn))
+    }
+  }
+
+  /** M6-17: full dynamic field for rolling on the consistent
+   *  surface (docs/m6_17_design.md): spatial derivatives of h to
+   *  3rd order, of ht to 2nd, of htt to 1st. Research path only;
+   *  tau is the segment-local time used by the other consistent
+   *  evaluators. Third derivatives jump at radial nodes. */
+  surfaceFieldDynamicConsistent(x: number, y: number, tau: number, out: SurfaceFieldDyn): void {
+    const f = {
+      h: 0, hx: 0, hy: 0, hxx: 0, hxy: 0, hyy: 0, ht: 0, htt: 0, htx: 0, hty: 0,
+    }
+    this.surfaceFieldConsistent(x, y, tau, f)
+    out.h = f.h; out.hx = f.hx; out.hy = f.hy
+    out.hxx = f.hxx; out.hxy = f.hxy; out.hyy = f.hyy
+    out.ht = f.ht; out.htt = f.htt; out.htx = f.htx; out.hty = f.hty
+    const t3 = { hxxx: 0, hxxy: 0, hxyy: 0, hyyy: 0 }
+    this.surfaceThirdConsistent(x, y, tau, t3)
+    out.hxxx = t3.hxxx; out.hxxy = t3.hxxy; out.hxyy = t3.hxyy; out.hyyy = t3.hyyy
+    const e = { w: 0, wx: 0, wy: 0, hxx: 0, hxy: 0, hyy: 0 }
+    this.evalFieldWith(x, y, tau, 'qd', e)
+    out.htxx = e.hxx; out.htxy = e.hxy; out.htyy = e.hyy
+    this.evalFieldWith(x, y, tau, 'qdd', e)
+    out.httx = e.wx; out.htty = e.wy
+  }
+
   /** M6-16: radial interpolant with third derivative per rho.
    *  Hermite intervals: the third derivative is piecewise constant
    *  (jumps at nodes — documented, docs/m6_16_design.md). Center

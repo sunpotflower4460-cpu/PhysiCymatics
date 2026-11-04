@@ -315,3 +315,51 @@ describe('M6-16 third derivatives of consistent geometry', () => {
     }
   })
 })
+
+describe('M6-17 dynamic consistent field', () => {
+  const mkD = () => ({
+    h: 0, hx: 0, hy: 0, hxx: 0, hxy: 0, hyy: 0,
+    hxxx: 0, hxxy: 0, hxyy: 0, hyyy: 0,
+    ht: 0, htt: 0, htx: 0, hty: 0, htxx: 0, htxy: 0, htyy: 0, httx: 0, htty: 0,
+  })
+  const mkF = () => ({ h: 0, hx: 0, hy: 0, hxx: 0, hxy: 0, hyy: 0, ht: 0, htt: 0, htx: 0, hty: 0 })
+
+  it('ht Hessian and htt gradient match FD of the field', () => {
+    const plate = excited()
+    const eps = 1e-6
+    for (const [x, y] of [[0.0317, -0.0213], [-0.0471, 0.0333], [0.0, 0.0]] as const) {
+      const d = mkD()
+      plate.surfaceFieldDynamicConsistent(x, y, TAU, d)
+      const fxP = mkF(); plate.surfaceFieldConsistent(x + eps, y, TAU, fxP)
+      const fxM = mkF(); plate.surfaceFieldConsistent(x - eps, y, TAU, fxM)
+      const fyP = mkF(); plate.surfaceFieldConsistent(x, y + eps, TAU, fyP)
+      const fyM = mkF(); plate.surfaceFieldConsistent(x, y - eps, TAU, fyM)
+      const checks: [number, number][] = [
+        [d.htxx, (fxP.htx - fxM.htx) / (2 * eps)],
+        [d.htxy, (fyP.htx - fyM.htx) / (2 * eps)],
+        [d.htyy, (fyP.hty - fyM.hty) / (2 * eps)],
+        [d.httx, (fxP.htt - fxM.htt) / (2 * eps)],
+        [d.htty, (fyP.htt - fyM.htt) / (2 * eps)],
+      ]
+      for (const [val, fd] of checks) {
+        expect(Math.abs(val - fd) / (1 + Math.abs(val))).toBeLessThan(0.02)
+      }
+      // Base field copies agree with surfaceFieldConsistent.
+      const f0 = mkF(); plate.surfaceFieldConsistent(x, y, TAU, f0)
+      expect(d.h).toBe(f0.h); expect(d.ht).toBe(f0.ht); expect(d.htt).toBe(f0.htt)
+      expect(d.hxx).toBe(f0.hxx); expect(d.htx).toBe(f0.htx)
+    }
+  })
+
+  it('ht matches the tau finite difference of h', () => {
+    const plate = excited()
+    const o = new Float64Array(5)
+    const d = mkD()
+    plate.surfaceFieldDynamicConsistent(0.0317, -0.0213, TAU, d)
+    const e = 1e-8
+    plate.surfAtConsistent(0.0317, -0.0213, TAU + e, o); const hp = o[0]
+    plate.surfAtConsistent(0.0317, -0.0213, TAU - e, o); const hm = o[0]
+    const fd = (hp - hm) / (2 * e)
+    expect(Math.abs(fd - d.ht) / (1 + Math.abs(d.ht))).toBeLessThan(1e-4)
+  })
+})
