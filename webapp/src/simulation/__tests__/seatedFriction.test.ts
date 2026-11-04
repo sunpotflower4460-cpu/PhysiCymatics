@@ -32,7 +32,7 @@ describe('M6-13 seated friction formulation', () => {
   it('flat static plate: no spontaneous drift', () => {
     const st: SeatedState = { x: 0.01, y: -0.02, vx: 0, vy: 0 }
     for (let k = 0; k < 1000; k++) {
-      expect(stepSeated(st, flat, { muS: 0.3, muK: 0.2 }, k * 1e-3, 1e-3)).toBe('stick')
+      expect(stepSeated(st, flat, { muS: 0.3, muK: 0.2 }, k * 1e-3, 1e-3).mode).toBe('stick')
     }
     expect(st.x).toBe(0.01); expect(st.y).toBe(-0.02)
   })
@@ -78,7 +78,7 @@ describe('M6-13 seated friction formulation', () => {
     const st1: SeatedState = { x: 0, y: 0, vx: 0, vy: 0 }
     let detached = false
     for (let t = 0; t < 0.1; t += 1e-4) {
-      if (stepSeated(st1, inclineVibrating(0, aSmall, om), { muS: 0.5, muK: 0.4 }, t, 1e-4) === 'detach') detached = true
+      if (stepSeated(st1, inclineVibrating(0, aSmall, om), { muS: 0.5, muK: 0.4 }, t, 1e-4).mode === 'detach') detached = true
     }
     expect(detached).toBe(false)
     // amp*om^2 = 1.5 g: detaches near sin(om t) = g/(1.5g) = 2/3 rising
@@ -86,7 +86,7 @@ describe('M6-13 seated friction formulation', () => {
     const st2: SeatedState = { x: 0, y: 0, vx: 0, vy: 0 }
     let tDetach = -1
     for (let t = 0; t < 0.02; t += 2e-5) {
-      if (stepSeated(st2, inclineVibrating(0, aBig, om), { muS: 0.5, muK: 0.4 }, t, 2e-5) === 'detach') { tDetach = t; break }
+      const r2 = stepSeated(st2, inclineVibrating(0, aBig, om), { muS: 0.5, muK: 0.4 }, t, 2e-5); if (r2.mode === 'detach') { tDetach = t + r2.advanced; break }
     }
     const want = Math.asin(2 / 3) / om
     expect(tDetach).toBeGreaterThan(0)
@@ -102,7 +102,7 @@ describe('M6-13 seated friction formulation', () => {
     const amp = (0.9 * G) / (om * om)
     const st: SeatedState = { x: 0, y: 0, vx: 0, vy: 0 }
     for (let t = 0; t < 0.2; t += 2e-5) {
-      expect(stepSeated(st, inclineVibrating(th, amp, om), { muS: 0.4, muK: 0.35 }, t, 2e-5)).toBe('stick')
+      expect(stepSeated(st, inclineVibrating(th, amp, om), { muS: 0.4, muK: 0.35 }, t, 2e-5).mode).toBe('stick')
     }
     expect(st.x).toBe(0)
   })
@@ -128,7 +128,7 @@ describe('M6-13 seated friction formulation', () => {
     const dt = 2e-5
     let sawSlip = false; let sawStick = false
     for (let t = 0; t < 0.6; t += dt) {
-      const m = stepSeated(st, surf, { muS, muK: 0.35 }, t, dt)
+      const m = stepSeated(st, surf, { muS, muK: 0.35 }, t, dt).mode
       if (m === 'slip') sawSlip = true
       if (m === 'stick') sawStick = true
       if (m === 'detach') break
@@ -136,6 +136,118 @@ describe('M6-13 seated friction formulation', () => {
     expect(sawStick).toBe(true)
     expect(sawSlip).toBe(true)
     expect(st.x).toBeLessThan(0.01 - 1e-4) // net down-slope creep
+  })
+
+  it('M6-13R dynamic surface: h=x(1+t), vx=1 gives ax=-5.905 (mixed derivative)', () => {
+    // h = x(1+t): hx=1+t, ht=x, htt=0, htx=1, H=0. At t=0, vx=1:
+    // B = 2*htx*vx = 2; M a = -grad h (g+B) -> 2 ax = -(g+2).
+    const surf: SurfaceFn = (x, _y, t, o) => {
+      o.h = x * (1 + t); o.hx = 1 + t; o.hy = 0
+      o.hxx = 0; o.hxy = 0; o.hyy = 0
+      o.ht = x; o.htt = 0; o.htx = 1; o.hty = 0
+    }
+    const st: SeatedState = { x: 0.3, y: 0, vx: 1, vy: 0 }
+    const a = seatedAccel(st, surf, { muS: 0, muK: 0 }, 0)
+    expect(a.ax).toBeCloseTo(-(G + 2) / 2, 9) // -5.905
+    expect(a.ax).toBeCloseTo(-5.905, 3)
+    // Normal force from the same constraint B: (B+g)/sqrt(1+hx^2).
+    expect(a.nPerMass).toBeCloseTo((G + 2) / Math.SQRT2, 9)
+  })
+
+  it('M6-13R dynamic curved surface: acceleration satisfies the constraint identity', () => {
+    // h = 0.5*k*(x^2+y^2) * (1 + 0.3 sin(w t)): check the computed
+    // acceleration against an independent finite-difference of the
+    // constrained trajectory at small dt (frictionless), verifying
+    // curvature + mixed-derivative terms together.
+    const k = 40; const om = 30
+    const surf: SurfaceFn = (x, y, t, o) => {
+      const c = 1 + 0.3 * Math.sin(om * t)
+      const cd = 0.3 * om * Math.cos(om * t)
+      const cdd = -0.3 * om * om * Math.sin(om * t)
+      o.h = 0.5 * k * c * (x * x + y * y)
+      o.hx = k * c * x; o.hy = k * c * y
+      o.hxx = k * c; o.hxy = 0; o.hyy = k * c
+      o.ht = 0.5 * k * cd * (x * x + y * y)
+      o.htt = 0.5 * k * cdd * (x * x + y * y)
+      o.htx = k * cd * x; o.hty = k * cd * y
+    }
+    const st: SeatedState = { x: 0.02, y: -0.015, vx: 0.1, vy: 0.07 }
+    const a = seatedAccel(st, surf, { muS: 0, muK: 0 }, 0.01)
+    // Integrate 2 ms with tiny steps as the reference trajectory and
+    // compare the initial acceleration by finite difference.
+    const ref: SeatedState = { ...st }
+    const h = 1e-6
+    let prevVx = st.vx
+    stepSeated(ref, surf, { muS: 0, muK: 0 }, 0.01, h)
+    const fdAx = (ref.vx - prevVx) / h
+    prevVx = ref.vx
+    stepSeated(ref, surf, { muS: 0, muK: 0 }, 0.01 + h, h)
+    const fdAx2 = (ref.vx - prevVx) / h
+    // RK4 self-consistency is weak evidence alone, so also verify the
+    // algebraic identity M a + grad h (g+B) = Qf (=0) directly.
+    const o = { h: 0, hx: 0, hy: 0, hxx: 0, hxy: 0, hyy: 0, ht: 0, htt: 0, htx: 0, hty: 0 }
+    surf(st.x, st.y, 0.01, o)
+    const B = st.vx * (o.hxx * st.vx + o.hxy * st.vy) + st.vy * (o.hxy * st.vx + o.hyy * st.vy)
+      + 2 * (o.htx * st.vx + o.hty * st.vy) + o.htt
+    const lhsX = a.ax + o.hx * (o.hx * a.ax + o.hy * a.ay) + o.hx * (G + B)
+    const lhsY = a.ay + o.hy * (o.hx * a.ax + o.hy * a.ay) + o.hy * (G + B)
+    expect(Math.abs(lhsX)).toBeLessThan(1e-9)
+    expect(Math.abs(lhsY)).toBeLessThan(1e-9)
+    expect(Math.abs(fdAx - a.ax)).toBeLessThan(Math.abs(fdAx2 - fdAx) + 0.05)
+  })
+
+  it('M6-13R stopping event: exact stop distance, dt-convergent, no drift', () => {
+    // Flat plate, vx=0.01, muK=0.2: analytic stop distance
+    // v^2/(2 muK g) = 2.548e-5 m, stop time v/(muK g) = 5.097e-3 s.
+    const want = (0.01 * 0.01) / (2 * 0.2 * G)
+    for (const dt of [1e-2, 1e-3, 1e-4]) {
+      const st: SeatedState = { x: 0, y: 0, vx: 0.01, vy: 0 }
+      let mode = ''
+      for (let t = 0; t < 0.05; t += dt) {
+        mode = stepSeated(st, flat, { muS: 0.3, muK: 0.2 }, t, dt).mode
+      }
+      expect(mode).toBe('stick')
+      expect(st.vx).toBe(0)
+      expect(Math.abs(st.x - want)).toBeLessThan(1e-9)
+      expect(st.y).toBe(0)
+    }
+    // Negative initial velocity is symmetric.
+    const st: SeatedState = { x: 0, y: 0, vx: -0.01, vy: 0.004 }
+    for (let t = 0; t < 0.05; t += 1e-3) stepSeated(st, flat, { muS: 0.3, muK: 0.2 }, t, 1e-3)
+    const v0 = Math.hypot(0.01, 0.004)
+    const wantD = (v0 * v0) / (2 * 0.2 * G)
+    expect(Math.abs(Math.hypot(st.x, st.y) - wantD)).toBeLessThan(1e-9)
+    expect(st.vx).toBe(0); expect(st.vy).toBe(0)
+  })
+
+  it('M6-13R stop on incline: sticks if tan<muS, re-slides if not', () => {
+    const th = 20 * Math.PI / 180
+    const slide = (muS: number): SeatedState => {
+      const st: SeatedState = { x: 0, y: 0, vx: 0.05, vy: 0 } // up-slope (+x)
+      for (let t = 0; t < 0.6; t += 1e-3) stepSeated(st, incline(th), { muS, muK: 0.2 }, t, 1e-3)
+      return st
+    }
+    const stuck = slide(0.5)
+    expect(stuck.vx).toBe(0)
+    expect(stuck.x).toBeGreaterThan(0) // stopped partway up, stays
+    const xStop = stuck.x
+    for (let t = 0; t < 0.2; t += 1e-3) stepSeated(stuck, incline(th), { muS: 0.5, muK: 0.2 }, t, 1e-3)
+    expect(stuck.x).toBe(xStop)
+    const reslid = slide(0.3) // tan20=0.364 > 0.3: stops, then slides back down
+    expect(reslid.vx).toBeLessThan(0)
+    expect(reslid.x).toBeLessThan(0)
+  })
+
+  it('M6-13R mid-step detach is located inside a coarse step', () => {
+    const om = 2 * Math.PI * 50
+    const aBig = (1.5 * G) / (om * om)
+    const surf = inclineVibrating(0, aBig, om)
+    const st: SeatedState = { x: 0, y: 0, vx: 0, vy: 0 }
+    const want = Math.asin(2 / 3) / om
+    // One coarse 5 ms step straddling the detach instant (~2.33 ms).
+    const r = stepSeated(st, surf, { muS: 0.5, muK: 0.4 }, 0, 5e-3)
+    expect(r.mode).toBe('detach')
+    expect(Math.abs(r.advanced - want)).toBeLessThan(1e-6)
   })
 
   it('seatedVz matches the constraint velocity', () => {
