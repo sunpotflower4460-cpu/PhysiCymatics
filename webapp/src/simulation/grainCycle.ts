@@ -16,6 +16,7 @@ import {
   sphereImpact, flightToRolling, rollingToFlight, solveContactParams,
   type FlightState, type ImpactParams,
 } from './rollingImpact'
+import { pairImpact } from './pairImpact'
 import {
   stepSeated, seatedVz,
   type SurfaceFn, type SurfaceField, type SeatedState,
@@ -30,6 +31,9 @@ export interface GrainCycleParams extends ImpactParams {
   dragGamma?: number
   /** M6-21: viscous spin decay in flight (1/s). 0 = off. */
   spinGamma?: number
+  /** M6-22: sphere-sphere collisions at plate-step boundaries
+   *  (roll model only; approximate, docs/m6_22_design.md). */
+  interparticle?: boolean
 }
 
 export interface GrainStats {
@@ -48,6 +52,8 @@ export interface GrainStats {
   impactImpulseX: number; impactImpulseY: number
   /** Sum of per-impact |dVh| magnitudes (cancellation analysis). */
   impactImpulseMagSum: number
+  /** M6-22: pair collisions this grain took part in. */
+  pairCollisions: number
   contactImpulseX: number; contactImpulseY: number
   conversionImpulseX: number; conversionImpulseY: number
   vxNow: number; vyNow: number
@@ -103,7 +109,7 @@ export class GrainCycleSim {
           impacts: 0, detaches: 0, contactTime: 0, lost: false,
           netFlightX: 0, netFlightY: 0, netContactX: 0, netContactY: 0,
           pathFlightM: 0, pathContactM: 0,
-          impactImpulseX: 0, impactImpulseY: 0, impactImpulseMagSum: 0,
+          impactImpulseX: 0, impactImpulseY: 0, impactImpulseMagSum: 0, pairCollisions: 0,
           contactImpulseX: 0, contactImpulseY: 0,
           conversionImpulseX: 0, conversionImpulseY: 0,
           vxNow: ini.vx ?? 0, vyNow: ini.vy ?? 0,
@@ -133,6 +139,11 @@ export class GrainCycleSim {
     }
     for (const g of this.grains) {
       if (!g.stats.lost) this.advanceGrain(g, t0, dt)
+    }
+    if (this.params.interparticle && this.params.model === 'roll') {
+      this.resolvePairCollisions(t0 + dt)
+    }
+    for (const g of this.grains) {
       const [hx, hy] = this.horizontalOf(g, t0 + dt)
       g.stats.pathM += Math.hypot(hx - g.lastHx, hy - g.lastHy)
       g.lastHx = hx; g.lastHy = hy
@@ -353,5 +364,91 @@ export class GrainCycleSim {
       g.mode = 'fly'
     }
     return r.advanced
+  }
+
+  /** M6-22: boundary-checked sphere-sphere collisions. All grains
+   *  are converted to center (flight) representation, overlapping
+   *  pairs get the frictional pair impulse (deepest first) plus
+   *  positional separation, then grains return to contact when
+   *  they are on the surface and slow enough. Approximate by
+   *  design (docs/m6_22_design.md). */
+  private resolvePairCollisions(tAbs: number): void {
+    const p = this.params
+    const R = p.radius
+    const grains = this.grains
+    const reps: FlightState[] = grains.map((g) => {
+      if (g.stats.lost) return { ...g.fly }
+      return g.mode === 'fly' ? { ...g.fly } : rollingToFlight(g.roll, this.dynSurf, p, tAbs)
+    })
+    const cell = 2 * R
+    const key = (x: number, y: number, z: number): string =>
+      `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`
+    const grid = new Map<string, number[]>()
+    reps.forEach((f, i) => {
+      if (grains[i].stats.lost) return
+      const k = key(f.cx, f.cy, f.cz)
+      const arr = grid.get(k)
+      if (arr) arr.push(i); else grid.set(k, [i])
+    })
+    interface Pair { i: number; j: number; pen: number }
+    const pairs: Pair[] = []
+    const seen = new Set<string>()
+    reps.forEach((f, i) => {
+      if (grains[i].stats.lost) return
+      const ix = Math.floor(f.cx / cell); const iy = Math.floor(f.cy / cell); const iz = Math.floor(f.cz / cell)
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+        const arr = grid.get(`${ix + dx},${iy + dy},${iz + dz}`)
+        if (!arr) continue
+        for (const j of arr) {
+          if (j <= i) continue
+          const pk = `${i}:${j}`
+          if (seen.has(pk)) continue
+          seen.add(pk)
+          const d = Math.hypot(reps[j].cx - f.cx, reps[j].cy - f.cy, reps[j].cz - f.cz)
+          if (d < 2 * R) pairs.push({ i, j, pen: 2 * R - d })
+        }
+      }
+    })
+    if (pairs.length === 0) return
+    pairs.sort((a, b) => b.pen - a.pen)
+    for (const pr of pairs) {
+      const A = reps[pr.i]; const B = reps[pr.j]
+      const dx = B.cx - A.cx; const dy = B.cy - A.cy; const dz = B.cz - A.cz
+      const d = Math.hypot(dx, dy, dz)
+      if (d === 0 || d >= 2 * R) continue
+      const mode = pairImpact(A, B, p)
+      if (mode !== 'separating') {
+        grains[pr.i].stats.pairCollisions++
+        grains[pr.j].stats.pairCollisions++
+      }
+      const push = (2 * R - d) / 2
+      const nx = dx / d; const ny = dy / d; const nz = dz / d
+      A.cx -= nx * push; A.cy -= ny * push; A.cz -= nz * push
+      B.cx += nx * push; B.cy += ny * push; B.cz += nz * push
+    }
+    // Write back.
+    grains.forEach((g, i) => {
+      if (g.stats.lost) return
+      const f = reps[i]
+      if (g.mode === 'fly') {
+        g.fly = f
+        return
+      }
+      // Was in contact: return to rolling if on the surface and
+      // the normal relative velocity is within capture bound.
+      const [qx, qy] = solveContactParams(f.cx, f.cy, this.dynSurf, R, tAbs, g.lastQ ?? undefined)
+      g.lastQ = [qx, qy]
+      const cp = dynCenterPartials(qx, qy, tAbs, this.dynSurf, R)
+      const gap = (f.cx - cp.C[0]) * cp.n[0] + (f.cy - cp.C[1]) * cp.n[1] + (f.cz - cp.C[2]) * cp.n[2]
+      this.plate.surfAtConsistent(qx, qy, tAbs, this.out5)
+      const un = f.vx * cp.n[0] + f.vy * cp.n[1] + (f.vz - this.out5[3]) * cp.n[2]
+      if (gap <= 1e-9 && un <= G * this.currentDt) {
+        g.roll = flightToRolling(f, this.dynSurf, p, tAbs)
+        g.mode = 'contact'
+      } else {
+        g.fly = f
+        g.mode = 'fly'
+      }
+    })
   }
 }

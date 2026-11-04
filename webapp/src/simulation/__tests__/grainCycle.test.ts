@@ -94,3 +94,28 @@ describe('M6-21 air drag flight', () => {
     expect(Math.abs(ovz)).toBeLessThan(G / gam)
   })
 })
+
+describe('M6-22 pair collisions in harness', () => {
+  it('two grains thrown at each other collide and separate', () => {
+    const runPair = (on: boolean) => {
+      const plate = new TransientPlate(singleToneScore(152, 0, 30), [0, 0])
+      const sim = new GrainCycleSim(plate,
+        { ...base, model: 'roll', restitution: 1, interparticle: on } as GrainCycleParams,
+        [
+          { x: -0.004, y: 0, dropM: 0.005, vx: 0.2 },
+          { x: 0.004, y: 0, dropM: 0.005, vx: -0.2 },
+        ])
+      for (let k = 0; k < Math.round(0.025 / DT); k++) sim.step(DT)
+      return sim.stats()
+    }
+    const on = runPair(true)
+    const off = runPair(false)
+    expect(on[0].pairCollisions).toBeGreaterThanOrEqual(1)
+    expect(on[1].pairCollisions).toBeGreaterThanOrEqual(1)
+    // With collisions they bounce apart (order preserved);
+    // without, they pass through each other (order swapped).
+    expect(on[0].x).toBeLessThan(on[1].x)
+    expect(off[0].x).toBeGreaterThan(off[1].x)
+    expect(off[0].pairCollisions).toBe(0)
+  })
+})
