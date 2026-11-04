@@ -404,3 +404,29 @@ describe('M6-11 ode accel mode (sand)', () => {
     void G
   })
 })
+
+describe('M6-14R setDrive cache invalidation', () => {
+  it('newly forced DOFs enter ode acceleration after drive move', () => {
+    // Zero state, center drive: only m=0 DOFs forced. Move drive
+    // eccentrically mid-segment: m>0 DOFs become directly forced and
+    // must appear in accelAt/surfAt identically (stale live mask
+    // dropped them before the fix).
+    const plate = new TransientPlate(directDofForceScore, [0, 0])
+    plate.accelMode = 'ode'
+    plate.advanceTo(0.002)
+    const before = plate.accelAt(0.05, 0.02, 0.0011)
+    plate.setDrive(0.06, 0.0)
+    const after = plate.accelAt(0.05, 0.02, 0.0011)
+    const out = new Float64Array(5)
+    plate.surfAt(0.05, 0.02, 0.0011, out)
+    expect(after).toBe(out[4])
+    expect(after).not.toBe(before)
+    expect(Math.abs(after)).toBeGreaterThan(0)
+    // Evaluation-order independence: fresh plate constructed at the
+    // eccentric drive gives the same value at the same state/time.
+    const fresh = new TransientPlate(directDofForceScore, [0.06, 0.0])
+    fresh.accelMode = 'ode'
+    fresh.advanceTo(0.002)
+    expect(fresh.accelAt(0.05, 0.02, 0.0011)).toBe(after)
+  })
+})

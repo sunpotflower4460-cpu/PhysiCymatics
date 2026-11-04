@@ -373,6 +373,17 @@ class TransientPlate:
                       + (-2*s3 + 3*s2)*qb + (s3 - s2)*h*qdb)
                 sqmin = np.where(valid, np.minimum(sqmin, qv), sqmin)
                 sqmax = np.where(valid, np.maximum(sqmax, qv), sqmax)
+            # Degenerate quadratic (A == 0): the qd numerator is linear
+            # and its root s = -C/B is a q extremum (M6-14R review;
+            # mirrors TS hermiteQRange). Missing it would underestimate
+            # the q range and could overstate the acceleration bound.
+            sl = -C/np.where(B != 0, B, 1.0)
+            valid = (A == 0) & (B != 0) & (sl > 0) & (sl < 1)
+            s2, s3 = sl*sl, sl*sl*sl
+            qv = ((2*s3 - 3*s2 + 1)*qa + (s3 - 2*s2 + sl)*h*qda
+                  + (-2*s3 + 3*s2)*qb + (s3 - s2)*h*qdb)
+            sqmin = np.where(valid, np.minimum(sqmin, qv), sqmin)
+            sqmax = np.where(valid, np.maximum(sqmax, qv), sqmax)
             qdmin = np.minimum(qda, qdb); qdmax = np.maximum(qda, qdb)
             sv = -B/np.where(A != 0, 2*A, 1.0)
             valid = (A != 0) & (sv > 0) & (sv < 1)
@@ -496,6 +507,14 @@ class TransientPlate:
                           + (-2*s3 + 3*s2)*q1 + (s3 - s2)*h*qd1)
                     sqmin = np.where(valid, np.minimum(sqmin, qv), sqmin)
                     sqmax = np.where(valid, np.maximum(sqmax, qv), sqmax)
+                # A == 0 degenerate root s = -C/B (see wtt bound above).
+                sl = -C/np.where(B != 0, B, 1.0)
+                valid = (A == 0) & (B != 0) & (sl > 0) & (sl < 1)
+                s2, s3 = sl*sl, sl*sl*sl
+                qv = ((2*s3 - 3*s2 + 1)*q + (s3 - 2*s2 + sl)*h*qd
+                      + (-2*s3 + 3*s2)*q1 + (s3 - s2)*h*qd1)
+                sqmin = np.where(valid, np.minimum(sqmin, qv), sqmin)
+                sqmax = np.where(valid, np.maximum(sqmax, qv), sqmax)
             qmin = np.minimum(qmin, sqmin); qmax = np.maximum(qmax, sqmax)
             if self.accel_mode == "ode" or h < 1e-7:
                 # Interval evaluation of the ODE right hand side over the

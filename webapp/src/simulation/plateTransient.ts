@@ -187,6 +187,7 @@ export class TransientPlate {
   }
 
   setDrive(x: number, y: number): void {
+    const changed = this.driveXY[0] !== x || this.driveXY[1] !== y
     this.driveXY = [x, y]
     const r = Math.hypot(x, y)
     const idx = Math.min((r * (this.ng1 / this.a)) | 0, this.ng1)
@@ -195,6 +196,15 @@ export class TransientPlate {
       const m = this.modes[d.mode].m
       this.phiDrive[j] = this.phi(d.mode, d.kind, idx, Math.cos(m * th), Math.sin(m * th))
     })
+    if (changed) {
+      // phiDrive feeds the live-DOF mask's forced-DOF criterion and the
+      // ODE acceleration; a stale mask/cache after a position change
+      // would drop newly forced DOFs (M6-14R review). Rebuild both.
+      this.tauSlotTau.fill(NaN)
+      this.tauSlotTauQH.fill(NaN)
+      const seg = this.seg
+      if (seg) this.computeLiveMask(seg.q0, seg.qd0, seg.q1, seg.qd1, seg.t0, seg.t1)
+    }
   }
 
   /** Replace the score at physics time atTime; q/qd are preserved. */

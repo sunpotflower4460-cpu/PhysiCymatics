@@ -244,3 +244,31 @@ def test_ode_sim_sleep_parity_and_detach(basis):
     assert st_on.n_alive == st_off.n_alive
     assert np.max(np.abs(st_on.x - st_off.x)) < 1e-6
     assert np.all(np.isfinite(st_on.z))
+
+
+def test_wtt_bound_degenerate_quadratic_A_zero(basis):
+    """M6-14R review: qd numerator A==0 (linear) has root s=-C/B; the
+    q range must include that interior extremum. Crafted: h=1,
+    qa=0, qb=0.5, qda=2, qdb=-1 -> A=0, B=-3, C=2, root 2/3,
+    q(2/3)=2/3 > max(qa,qb)=0.5."""
+    score = pt.ScoreSignal([dict(start_s=0.0, end_s=10.0,
+                                  frequency_hz=0.0, forcePeak_N=0.0,
+                                  attack_s=0.0, release_s=0.0)])
+    plate = pt.TransientPlate(basis, score, drive_xy=(0.0, 0.0))
+    plate.accel_mode = "ode"
+    n = plate.ndof
+    q0 = np.zeros(n); qd0 = np.zeros(n); q1 = np.zeros(n); qd1 = np.zeros(n)
+    q0[0] = 0.0; q1[0] = 0.5; qd0[0] = 2.0; qd1[0] = -1.0
+    plate._seg = (0.0, 1.0, q0, qd0, np.zeros(n), q1, qd1, np.zeros(n))
+    lb = plate.wtt_lower_bound(0.0, 0.0, 0.0, 1.0)
+    ts = np.linspace(0.0, 1.0, 4001)
+    wmin = min(float(plate.surf_at(np.array([0.0]), np.array([0.0]),
+                                    float(t))[4][0]) for t in ts)
+    assert lb <= wmin + 1e-9, (lb, wmin)
+    # Bound must reflect qmax=2/3, well below an endpoint-only estimate
+    # (which would use qmax=0.5): lb < -w^2 * 0.6 * Phi(0,0).
+    w0 = plate.omega[0]
+    phi0 = float(pt._phi_grad(plate.modes[plate.dofs[0]["mode"]],
+                              plate.dofs[0]["kind"],
+                              np.array([0.0]), np.array([0.0]))[0][0])
+    assert lb < -w0 * w0 * 0.6 * phi0, (lb, phi0)
