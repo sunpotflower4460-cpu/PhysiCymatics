@@ -1201,6 +1201,40 @@ export class TransientSandSim {
     }
   }
 
+  private obsScratch = new Float64Array(5)
+
+  /** Measurement-only particle state [x,y,z,vx,vy,vz] at the current
+   *  sim time, without modifying simulation state (M6-12R). Sleeping
+   *  flyers keep their stored arrays at sleepT0, so raw-array reads
+   *  are stale; this evaluates them analytically at this.t (same
+   *  convention as snapshot()). Seated grains report the surface
+   *  height/velocity at this.t with their stored (zero) horizontal
+   *  velocity. Observation never wakes or materializes anything. */
+  observedState(i: number, out: Float64Array): void {
+    const st = this.state
+    if (this.sleeping[i] && !st.sitting[i]) {
+      const d = this.t - this.sleepT0[i]
+      out[0] = st.x[i] + st.vx[i] * d
+      out[1] = st.y[i] + st.vy[i] * d
+      out[2] = st.z[i] + st.vz[i] * d - 0.5 * G * d * d
+      out[3] = st.vx[i]; out[4] = st.vy[i]; out[5] = st.vz[i] - G * d
+      return
+    }
+    if (st.sitting[i]) {
+      out[0] = st.x[i]; out[1] = st.y[i]
+      out[3] = st.vx[i]; out[4] = st.vy[i]
+      if (this.plate.hasSegment()) {
+        this.plate.surfAt(st.x[i], st.y[i], this.t, this.obsScratch)
+        out[2] = this.obsScratch[0]; out[5] = this.obsScratch[3]
+      } else {
+        out[2] = st.z[i]; out[5] = st.vz[i]
+      }
+      return
+    }
+    out[0] = st.x[i]; out[1] = st.y[i]; out[2] = st.z[i]
+    out[3] = st.vx[i]; out[4] = st.vy[i]; out[5] = st.vz[i]
+  }
+
   snapshot(stepsPerSec = 0) {
     const st = this.state
     const xy = new Float32Array(this.nAlive * 2)

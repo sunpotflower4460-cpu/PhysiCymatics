@@ -28,21 +28,26 @@ interface Snap {
 }
 
 function snapshot(sim: TransientSandSim, path: Float64Array): Snap {
+  // M6-12R: all positions/velocities come from observedState (current
+  // sim time, analytic for sleeping flyers). Raw state arrays of
+  // sleeping flyers are stale at sleepT0 and must not be measured.
   const st = sim.state; const a = sim.plate.a
   const radial = new Array(10).fill(0)
   const density = new Float64Array(GRID * GRID)
+  const o = new Float64Array(6)
   let alive = 0; let sitting = 0; let sleeping = 0; let speed = 0; let pathSum = 0
   for (let i = 0; i < st.id.length; i++) {
     if (!st.alive[i]) continue
     alive++
     if (st.sitting[i]) sitting++
     if (sim.sleeping[i]) sleeping++
-    speed += Math.hypot(st.vx[i], st.vy[i], st.vz[i])
+    sim.observedState(i, o)
+    speed += Math.hypot(o[3], o[4], o[5])
     pathSum += path[i]
-    const r = Math.hypot(st.x[i], st.y[i]) / a
+    const r = Math.hypot(o[0], o[1]) / a
     radial[Math.min(9, (r * 10) | 0)]++
-    const gx = Math.min(GRID - 1, Math.max(0, ((st.x[i] / a + 1) * GRID / 2) | 0))
-    const gy = Math.min(GRID - 1, Math.max(0, ((st.y[i] / a + 1) * GRID / 2) | 0))
+    const gx = Math.min(GRID - 1, Math.max(0, ((o[0] / a + 1) * GRID / 2) | 0))
+    const gy = Math.min(GRID - 1, Math.max(0, ((o[1] / a + 1) * GRID / 2) | 0))
     density[gy * GRID + gx]++
   }
   let entropy = 0
@@ -65,12 +70,24 @@ function snapshot(sim: TransientSandSim, path: Float64Array): Snap {
   }
 }
 
-function runLong(freq: number, n: number, seed: number, mode: 'hermite' | 'ode'): { snaps: Snap[]; sim: TransientSandSim; wallS: number } {
+interface ExitRec { t: number; rOverA: number }
+
+function runLong(freq: number, n: number, seed: number, mode: 'hermite' | 'ode'): { snaps: Snap[]; sim: TransientSandSim; wallS: number; exits: ExitRec[] } {
   const sim = createTransientSim(singleToneScore(freq, calibratedForceN(), 30), n, seed)
   if (mode === 'ode') sim.plate.accelMode = 'ode'
   const st = sim.state
+  const a = sim.plate.a
   const path = new Float64Array(n)
-  const px = Float64Array.from(st.x); const py = Float64Array.from(st.y); const pz = Float64Array.from(st.z)
+  // Observed (current-time) previous positions. Chord-sum over steps:
+  // each step's chord underestimates the true ballistic arc by
+  // O(dt^2 * curvature), identical for sleep on/off (validated in
+  // observed.test.ts). Sleeping flyers move in observed space every
+  // step, so no motion is skipped or double-counted.
+  const prev = new Float64Array(n * 3)
+  const wasAlive = new Uint8Array(n).fill(1)
+  const o = new Float64Array(6)
+  for (let i = 0; i < n; i++) { sim.observedState(i, o); prev.set([o[0], o[1], o[2]], i * 3) }
+  const exits: ExitRec[] = []
   const dt = sim.dtNow()
   const snapSteps = new Map<number, number>()
   for (const ts of SNAP_TIMES) {
@@ -83,15 +100,19 @@ function runLong(freq: number, n: number, seed: number, mode: 'hermite' | 'ode')
     sim.step()
     for (let i = 0; i < n; i++) {
       if (st.alive[i]) {
-        path[i] += Math.hypot(st.x[i] - px[i], st.y[i] - py[i], st.z[i] - pz[i])
+        sim.observedState(i, o)
+        path[i] += Math.hypot(o[0] - prev[i * 3], o[1] - prev[i * 3 + 1], o[2] - prev[i * 3 + 2])
+        prev.set([o[0], o[1], o[2]], i * 3)
+      } else if (wasAlive[i]) {
+        wasAlive[i] = 0
+        exits.push({ t: sim.t, rOverA: Math.hypot(prev[i * 3], prev[i * 3 + 1]) / a })
       }
-      px[i] = st.x[i]; py[i] = st.y[i]; pz[i] = st.z[i]
     }
     if (snapSteps.has(s)) snaps.push(snapshot(sim, path))
     if (s * dt >= 5) break
   }
   if (snaps.length === 0 || snaps[snaps.length - 1].t !== sim.t) snaps.push(snapshot(sim, path))
-  return { snaps, sim, wallS: (Date.now() - wall0) / 1000 }
+  return { snaps, sim, wallS: (Date.now() - wall0) / 1000, exits }
 }
 
 /** Time-averaged |wtt| over the bare plate after transients (measurement only). */
@@ -207,7 +228,7 @@ benchIt('M6-12 long-time sand motion: 300 grains, A vs B, 8 frequencies', () => 
     const act = activityMap(freq, 'hermite')
     writePng(new URL(`activity_${freq}hz.png`, assetDir).pathname, act, false)
     for (const mode of ['hermite', 'ode'] as const) {
-      const { snaps, sim, wallS } = runLong(freq, 300, 42, mode)
+      const { snaps, sim, wallS, exits } = runLong(freq, 300, 42, mode)
       const last = snaps[snaps.length - 1]
       const prev = snaps.length > 1 ? snaps[snaps.length - 2] : null
       let l1 = 0
@@ -218,7 +239,10 @@ benchIt('M6-12 long-time sand motion: 300 grains, A vs B, 8 frequencies', () => 
         l1 /= 2
       }
       const corr = pearson(last.density, act)
-      console.log(`M612 f=${freq} mode=${mode} wall=${wallS.toFixed(1)}s bounce=${sim.nBounce} detach=${sim.nDetach} cap=${sim.nEventCap} corr(density,activity)=${corr.toFixed(3)} lastL1=${l1.toFixed(3)}`)
+      const exitR = exits.length ? (exits.reduce((s, e) => s + e.rOverA, 0) / exits.length).toFixed(3) : '-'
+      const exitSpan = exits.length ? `${exits[0].t.toFixed(2)}..${exits[exits.length - 1].t.toFixed(2)}s` : '-'
+      const radialInitNorm = last.radial.map((v) => (v / 300).toFixed(3)).join(',')
+      console.log(`M612 f=${freq} mode=${mode} wall=${wallS.toFixed(1)}s bounce=${sim.nBounce} detach=${sim.nDetach} cap=${sim.nEventCap} corr(density,activity)=${corr.toFixed(3)} lastL1=${l1.toFixed(3)} exits=${exits.length} exitMeanR/a=${exitR} exitTimes=${exitSpan} finalRadial/initial=[${radialInitNorm}]`)
       for (const s of snaps) console.log(`  ${fmtSnap(s)}`)
       if (mode === 'hermite') {
         writePng(new URL(`density_${freq}hz.png`, assetDir).pathname, last.density, true)
@@ -255,6 +279,66 @@ benchIt('M6-12 plate-only detach margin per frequency (explains frozen vs active
     }
   }
 }, 1_800_000)
+
+benchIt('M6-12R conservative no-detach proof + drive-force threshold scan', () => {
+  // Conservative margin: center drive excites only m=0 DOFs, so the
+  // implemented wtt field is radial-bin-wise constant in space.
+  // wttLowerBound at one radius per radial bin therefore bounds the
+  // whole bin (all angles), and min over bins x segments of
+  // (bound + G) >= 0 proves detach impossible on the window —
+  // distinct from the sampled min(g+wtt) of the earlier study.
+  const GB = 9.81
+  const proofMargin = (freq: number, forceFac: number, seconds: number, mode: 'hermite' | 'ode'): number => {
+    const plate = new TransientPlate(singleToneScore(freq, calibratedForceN() * forceFac, 30), [0, 0])
+    if (mode === 'ode') plate.accelMode = 'ode'
+    const dt = 1 / (44 * freq)
+    const nSeg = Math.min(Math.round(seconds / dt), 60_000)
+    // One radius at the center of EVERY implemented radial bin
+    // (ngrid=512 -> bins idx 0..510 over [0,a], idx = min((r*511/a)|0, 511)).
+    const ng1 = 511
+    let mn = Infinity
+    for (let k = 0; k < nSeg; k++) {
+      plate.beginStep(k * dt, (k + 1) * dt)
+      for (let bi = 0; bi < ng1; bi++) {
+        const r = ((bi + 0.5) / ng1) * plate.a
+        mn = Math.min(mn, plate.wttLowerBound(r, 0, k * dt, (k + 1) * dt) + GB)
+      }
+    }
+    return mn
+  }
+  for (const freq of [70, 271.3, 368.6, 500]) {
+    for (const mode of ['hermite', 'ode'] as const) {
+      const m1 = proofMargin(freq, 1, 1, mode)
+      console.log(`M612-proof f=${freq} mode=${mode} conservativeMin(g+wtt) over 1s = ${m1.toFixed(3)} m/s2 -> ${m1 >= 0 ? 'PROVEN no detach on [0,1s]' : 'not proven (bound below threshold)'}`)
+    }
+  }
+  // Drive-force threshold: sampled margin (dense radial scan, plate
+  // only) as a function of force factor — measured boundary, not proof.
+  const sampledMargin = (freq: number, forceFac: number): number => {
+    const plate = new TransientPlate(singleToneScore(freq, calibratedForceN() * forceFac, 30), [0, 0])
+    const dt = 1 / (44 * freq)
+    const nSeg = Math.min(Math.round(1 / dt), 60_000)
+    const out = new Float64Array(5)
+    let mn = Infinity
+    for (let k = 0; k < nSeg; k++) {
+      plate.beginStep(k * dt, (k + 1) * dt)
+      for (const tau of [k * dt, (k + 0.5) * dt, (k + 1) * dt]) {
+        for (let ri = 0; ri <= 200; ri++) {
+          plate.surfAt((ri / 200) * plate.a, 0, tau, out)
+          mn = Math.min(mn, GB + out[4])
+        }
+      }
+    }
+    return mn
+  }
+  for (const freq of [70, 271.3, 368.6, 500, 173.31]) {
+    const row: string[] = []
+    for (const fac of [0.5, 1, 1.5, 2, 3, 4, 6, 8]) {
+      row.push(`x${fac}:${sampledMargin(freq, fac).toFixed(2)}`)
+    }
+    console.log(`M612-forceScan f=${freq} sampledMin(g+wtt)[m/s2] by force factor: ${row.join(' ')}`)
+  }
+}, 3_600_000)
 
 benchIt('M6-12 scale tendency: 1000 and 5000 grains, shorter time', () => {
   for (const [freq, n] of [[152, 1000], [152, 5000], [649, 1000]] as const) {

@@ -927,6 +927,11 @@ export class TransientPlate {
    *  fallback. Callers that assume wtt linear in time (Hermite form)
    *  must not run when this is true. Canonical steps are never tiny,
    *  so default-mode production stepping always returns false here. */
+  /** Whether a Hermite segment is currently active (between
+   *  beginStep and the next one). Measurement helpers use this to
+   *  decide whether surface evaluation at the current time is valid. */
+  hasSegment(): boolean { return this.seg !== null }
+
   odeFormActive(): boolean {
     return this.accelMode === 'ode' || (!!this.seg && this.seg.t1 - this.seg.t0 < 1e-7)
   }
