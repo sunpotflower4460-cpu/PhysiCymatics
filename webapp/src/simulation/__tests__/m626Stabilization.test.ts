@@ -418,3 +418,35 @@ describe('M6-26 gate: center polynomial and zero-gap recollision', () => {
     expect(placed).toBe(true)
   })
 })
+
+describe('M6-26 gate: analytic Gamma classification (vibrating plane)', () => {
+  it('detach iff Gamma>1, at asin(1/Gamma)/omega, for a resting sphere', () => {
+    const om = 2 * Math.PI * 40
+    for (const gam of [0.5, 0.9, 1.1, 2, 4]) {
+      const A = gam * G / (om * om)
+      const surf: SurfaceFnDyn = (_x, _y, t, o) => {
+        o.h = A * Math.sin(om * t); o.hx = 0; o.hy = 0
+        o.hxx = 0; o.hxy = 0; o.hyy = 0; o.hxxx = 0; o.hxxy = 0; o.hxyy = 0; o.hyyy = 0
+        o.ht = A * om * Math.cos(om * t); o.htt = -A * om * om * Math.sin(om * t)
+        o.htx = 0; o.hty = 0; o.htxx = 0; o.htxy = 0; o.htyy = 0; o.httx = 0; o.htty = 0
+      }
+      const p: RollingParams = { muS: 0.3, muK: 0.2, radius: 1e-3, beta: 2 / 5 }
+      const st: RollingState = { x: 0.01, y: -0.02, vx: 0, vy: 0, wx: 0, wy: 0, wz: 0 }
+      let detachT = -1
+      let t = 0
+      const dt = 1e-4
+      for (let k = 0; k < Math.round(2 * (2 * Math.PI / om) / dt); k++) {
+        const r = stepDynRolling(st, surf, p, t, dt)
+        if (r.mode === 'detach') { detachT = t + r.advanced; break }
+        t += dt
+      }
+      if (gam < 1) {
+        expect(detachT).toBe(-1)
+        expect(Math.abs(st.x - 0.01)).toBeLessThan(1e-12)
+      } else {
+        expect(detachT).toBeGreaterThan(0)
+        expect(Math.abs(detachT - Math.asin(1 / gam) / om)).toBeLessThan(3e-4)
+      }
+    }
+  })
+})
