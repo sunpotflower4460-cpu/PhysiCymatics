@@ -141,6 +141,7 @@ export class GrainCycleSim {
         this.plate.surfAtConsistent(g.fly.cx, g.fly.cy, t0, this.out5)
         g.fly.cz = this.out5[0]
           + (this.params.model === 'roll' ? this.params.radius : 0)
+          + (this.params.plateHalfThickness ?? 0)
           + (this.pendingDrops as number[])[i]
       })
       this.pendingDrops = null
@@ -167,7 +168,7 @@ export class GrainCycleSim {
   private horizontalOf(g: Grain, tAbs: number): [number, number] {
     if (this.params.model === 'roll') {
       if (g.mode === 'fly') return [g.fly.cx, g.fly.cy]
-      const cp = dynCenterPartials(g.roll.x, g.roll.y, tAbs, this.dynSurf, this.params.radius)
+      const cp = dynCenterPartials(g.roll.x, g.roll.y, tAbs, this.dynSurf, this.params.radius, this.params.plateHalfThickness ?? 0)
       return [cp.C[0], cp.C[1]]
     }
     return g.mode === 'fly' ? [g.fly.cx, g.fly.cy] : [g.seated.x, g.seated.y]
@@ -313,10 +314,13 @@ export class GrainCycleSim {
       // Capture if rebound normal speed is negligible: recompute
       // normal relative speed after impact.
       const [qx, qy] = r.contact
-      const cp = dynCenterPartials(qx, qy, tc, this.dynSurf, p.radius)
+      const cp = dynCenterPartials(qx, qy, tc, this.dynSurf, p.radius, p.plateHalfThickness ?? 0)
       this.plate.surfAtConsistent(qx, qy, tc, this.out5)
       this.recordImpactDiag(g, tc, g.fly.vx - vxPre, g.fly.vy - vyPre, this.out5[1], this.out5[2])
-      const unPost = g.fly.vx * cp.n[0] + g.fly.vy * cp.n[1]
+      const ht2c = p.plateHalfThickness ?? 0
+      this.plate.surfaceFieldConsistent(qx, qy, tc, this.field)
+      const unPost = (g.fly.vx + ht2c * this.field.htx) * cp.n[0]
+        + (g.fly.vy + ht2c * this.field.hty) * cp.n[1]
         + (g.fly.vz - this.out5[3]) * cp.n[2]
       // Capture threshold g*dt (docs/m6_19_design.md; exact at e=0).
       if (unPost <= G * this.currentDt) {
@@ -459,12 +463,16 @@ export class GrainCycleSim {
       }
       // Was in contact: return to rolling if on the surface and
       // the normal relative velocity is within capture bound.
-      const [qx, qy] = solveContactParams(f.cx, f.cy, this.dynSurf, R, tAbs, g.lastQ ?? undefined)
+      const [qx, qy] = solveContactParams(f.cx, f.cy, this.dynSurf, R, tAbs, g.lastQ ?? undefined, p.plateHalfThickness ?? 0)
       g.lastQ = [qx, qy]
-      const cp = dynCenterPartials(qx, qy, tAbs, this.dynSurf, R)
+      const cp = dynCenterPartials(qx, qy, tAbs, this.dynSurf, R, p.plateHalfThickness ?? 0)
       const gap = (f.cx - cp.C[0]) * cp.n[0] + (f.cy - cp.C[1]) * cp.n[1] + (f.cz - cp.C[2]) * cp.n[2]
       this.plate.surfAtConsistent(qx, qy, tAbs, this.out5)
-      const un = f.vx * cp.n[0] + f.vy * cp.n[1] + (f.vz - this.out5[3]) * cp.n[2]
+      this.plate.surfaceFieldConsistent(qx, qy, tAbs, this.field)
+      const ht2p = p.plateHalfThickness ?? 0
+      const un = (f.vx + ht2p * this.field.htx) * cp.n[0]
+        + (f.vy + ht2p * this.field.hty) * cp.n[1]
+        + (f.vz - this.out5[3]) * cp.n[2]
       if (gap <= 1e-9 && un <= G * this.currentDt) {
         g.roll = flightToRolling(f, this.dynSurf, p, tAbs)
         g.mode = 'contact'

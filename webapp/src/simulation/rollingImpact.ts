@@ -19,6 +19,8 @@ import type { RollingParams, RollingState } from './rollingSphere'
 
 export interface ImpactParams extends RollingParams {
   restitution: number
+  /** M6-25: Kirchhoff top-surface offset H/2 (see rollingDynamic). */
+  plateHalfThickness?: number
 }
 
 /** Free-flight state of the sphere center. */
@@ -54,12 +56,12 @@ const sf: SurfaceFieldDyn = {
  *  Newton iteration with the horizontal Jacobian of C(q). */
 export function solveContactParams(
   cx: number, cy: number, surf: SurfaceFnDyn, radius: number, t: number,
-  guess?: [number, number],
+  guess?: [number, number], halfThick = 0,
 ): [number, number] {
   let x = guess ? guess[0] : cx
   let y = guess ? guess[1] : cy
   for (let it = 0; it < 50; it++) {
-    const cp = dynCenterPartials(x, y, t, surf, radius)
+    const cp = dynCenterPartials(x, y, t, surf, radius, halfThick)
     const ex = cp.C[0] - cx; const ey = cp.C[1] - cy
     if (Math.hypot(ex, ey) < 1e-13) break
     const a = cp.D[0][0]; const b = cp.D[1][0]
@@ -76,15 +78,18 @@ export function solveContactParams(
 export function sphereImpact(
   st: FlightState, surf: SurfaceFnDyn, p: ImpactParams, t: number,
 ): ImpactResult {
-  const [qx, qy] = solveContactParams(st.cx, st.cy, surf, p.radius, t)
+  const ht2 = p.plateHalfThickness ?? 0
+  const [qx, qy] = solveContactParams(st.cx, st.cy, surf, p.radius, t, undefined, ht2)
   surf(qx, qy, t, sf)
   const sn = Math.hypot(sf.hx, sf.hy, 1)
   const n: V3 = [-sf.hx / sn, -sf.hy / sn, 1 / sn]
   const w: V3 = [st.wx, st.wy, st.wz]
   const wxn = cross(w, n)
+  // Plate material (top-surface) velocity at the contact.
+  const vsx = -ht2 * sf.htx; const vsy = -ht2 * sf.hty
   const u: V3 = [
-    st.vx - p.radius * wxn[0],
-    st.vy - p.radius * wxn[1],
+    st.vx - p.radius * wxn[0] - vsx,
+    st.vy - p.radius * wxn[1] - vsy,
     st.vz - p.radius * wxn[2] - sf.ht,
   ]
   const un = dot(u, n)
@@ -132,10 +137,11 @@ export function sphereImpact(
  *  (least-squares / J^T) sense; any residual normal velocity is
  *  the caller's responsibility (impact first). */
 export function flightToRolling(
-  st: FlightState, surf: SurfaceFnDyn, p: RollingParams, t: number,
+  st: FlightState, surf: SurfaceFnDyn, p: ImpactParams, t: number,
 ): RollingState {
-  const [qx, qy] = solveContactParams(st.cx, st.cy, surf, p.radius, t)
-  const cp = dynCenterPartials(qx, qy, t, surf, p.radius)
+  const ht2 = p.plateHalfThickness ?? 0
+  const [qx, qy] = solveContactParams(st.cx, st.cy, surf, p.radius, t, undefined, ht2)
+  const cp = dynCenterPartials(qx, qy, t, surf, p.radius, ht2)
   const rhsV: V3 = [
     st.vx - cp.D[2][0], st.vy - cp.D[2][1], st.vz - cp.D[2][2],
   ]
@@ -152,9 +158,9 @@ export function flightToRolling(
 
 /** Convert a rolling state into a flight state (detach). */
 export function rollingToFlight(
-  st: RollingState, surf: SurfaceFnDyn, p: RollingParams, t: number,
+  st: RollingState, surf: SurfaceFnDyn, p: ImpactParams, t: number,
 ): FlightState {
-  const cp = dynCenterPartials(st.x, st.y, t, surf, p.radius)
+  const cp = dynCenterPartials(st.x, st.y, t, surf, p.radius, p.plateHalfThickness ?? 0)
   const v: [number, number, number] = [0, 0, 0]
   dynCenterVelocity(st, surf, p, t, v)
   return {
@@ -167,10 +173,11 @@ export function rollingToFlight(
 /** Angular momentum about the contact point, per unit mass:
  *  L = R n x V + beta R^2 w. Conserved across sphereImpact. */
 export function contactAngularMomentum(
-  st: FlightState, surf: SurfaceFnDyn, p: RollingParams, t: number,
+  st: FlightState, surf: SurfaceFnDyn, p: ImpactParams, t: number,
   out: [number, number, number],
 ): void {
-  const [qx, qy] = solveContactParams(st.cx, st.cy, surf, p.radius, t)
+  const ht2 = p.plateHalfThickness ?? 0
+  const [qx, qy] = solveContactParams(st.cx, st.cy, surf, p.radius, t, undefined, ht2)
   surf(qx, qy, t, sf)
   const sn = Math.hypot(sf.hx, sf.hy, 1)
   const n: V3 = [-sf.hx / sn, -sf.hy / sn, 1 / sn]

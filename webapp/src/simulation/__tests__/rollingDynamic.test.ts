@@ -170,3 +170,41 @@ describe('M6-17 integration smoke: rolling on the consistent plate field', () =>
     console.log('plate rolling smoke modes:', [...modes].join(','), 'final t=', t)
   })
 })
+
+describe('M6-25 Kirchhoff top-surface partials', () => {
+  it('center partials with half-thickness match FD of top-surface C', () => {
+    const ht2 = 5e-4
+    const fld = (): SurfaceFieldDyn => ({
+      h: 0, hx: 0, hy: 0, hxx: 0, hxy: 0, hyy: 0, hxxx: 0, hxxy: 0, hxyy: 0, hyyy: 0,
+      ht: 0, htt: 0, htx: 0, hty: 0, htxx: 0, htxy: 0, htyy: 0, httx: 0, htty: 0,
+    })
+    const cOf = (x: number, y: number, t: number): [number, number, number] => {
+      const o = fld(); dynSinusoid(x, y, t, o)
+      const sn = Math.hypot(o.hx, o.hy, 1)
+      return [
+        x - ht2 * o.hx - P.radius * o.hx / sn,
+        y - ht2 * o.hy - P.radius * o.hy / sn,
+        o.h + ht2 + P.radius / sn,
+      ]
+    }
+    const x = 0.0317; const y = -0.0213; const t = 0.37
+    const cp = dynCenterPartials(x, y, t, dynSinusoid, P.radius, ht2)
+    const es = 1e-6; const et = 1e-7
+    for (let i = 0; i < 3; i++) {
+      expect(Math.abs((cOf(x + es, y, t)[i] - cOf(x - es, y, t)[i]) / (2 * es) - cp.D[0][i])).toBeLessThan(1e-5)
+      expect(Math.abs((cOf(x, y + es, t)[i] - cOf(x, y - es, t)[i]) / (2 * es) - cp.D[1][i])).toBeLessThan(1e-5)
+      expect(Math.abs((cOf(x, y, t + et)[i] - cOf(x, y, t - et)[i]) / (2 * et) - cp.D[2][i])).toBeLessThan(1e-4)
+      expect(Math.abs(cOf(x, y, t)[i] - cp.C[i])).toBeLessThan(1e-12)
+    }
+    const e2 = 2e-4; const e2t = 2e-5
+    for (let i = 0; i < 3; i++) {
+      const fxx = (cOf(x + e2, y, t)[i] - 2 * cOf(x, y, t)[i] + cOf(x - e2, y, t)[i]) / (e2 * e2)
+      const fxt = (cOf(x + e2, y, t + e2t)[i] - cOf(x + e2, y, t - e2t)[i]
+        - cOf(x - e2, y, t + e2t)[i] + cOf(x - e2, y, t - e2t)[i]) / (4 * e2 * e2t)
+      const ftt = (cOf(x, y, t + e2t)[i] - 2 * cOf(x, y, t)[i] + cOf(x, y, t - e2t)[i]) / (e2t * e2t)
+      expect(Math.abs(fxx - cp.H[0][i])).toBeLessThan(5e-3)
+      expect(Math.abs(fxt - cp.H[3][i])).toBeLessThan(5e-2)
+      expect(Math.abs(ftt - cp.H[5][i])).toBeLessThan(5e-2)
+    }
+  })
+})

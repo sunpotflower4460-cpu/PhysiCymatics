@@ -27,6 +27,14 @@ export interface SurfaceFieldDyn {
 }
 export type SurfaceFnDyn = (x: number, y: number, t: number, out: SurfaceFieldDyn) => void
 
+export interface DynRollingParams extends RollingParams {
+  /** M6-25: Kirchhoff top-surface offset H/2 (m). Material
+   *  surface point S = (x - ht2 hx, y - ht2 hy, h + ht2) with
+   *  the mid-surface graph normal (linearized plate theory;
+   *  docs/m6_25_design.md). 0/undefined = pre-M6-25 model. */
+  plateHalfThickness?: number
+}
+
 export interface DynRollingAccel {
   ax: number; ay: number
   dwx: number; dwy: number; dwz: number
@@ -75,12 +83,15 @@ export interface DynCenterPartials {
 
 export function dynCenterPartials(
   x: number, y: number, t: number, surf: SurfaceFnDyn, radius: number,
+  halfThick = 0,
 ): DynCenterPartials {
   surf(x, y, t, sf)
-  return partialsFromField(sf, x, y, radius)
+  return partialsFromField(sf, x, y, radius, halfThick)
 }
 
-function partialsFromField(s: SurfaceFieldDyn, x: number, y: number, R: number): DynCenterPartials {
+function partialsFromField(
+  s: SurfaceFieldDyn, x: number, y: number, R: number, ht2 = 0,
+): DynCenterPartials {
   const { D1, D2 } = derivTables(s)
   const m: V3 = [-s.hx, -s.hy, 1]
   const sn = Math.hypot(m[0], m[1], m[2])
@@ -99,12 +110,21 @@ function partialsFromField(s: SurfaceFieldDyn, x: number, y: number, R: number):
         scale(n, -sndd / sn + (snd[d1] * snd[d2]) / (sn * sn))),
     ))
   }
-  const S: V3 = [x, y, s.h]
-  const Sd: V3[] = [[1, 0, s.hx], [0, 1, s.hy], [0, 0, s.ht]]
-  const Sdd: V3[] = [
-    [0, 0, s.hxx], [0, 0, s.hxy], [0, 0, s.hyy],
-    [0, 0, s.htx], [0, 0, s.hty], [0, 0, s.htt],
+  // Material surface point: mid-surface graph (ht2 = 0) or
+  // Kirchhoff top surface S = (x - ht2 hx, y - ht2 hy, h + ht2).
+  const S: V3 = [x - ht2 * s.hx, y - ht2 * s.hy, s.h + ht2]
+  const Sd: V3[] = [
+    [1 - ht2 * s.hxx, -ht2 * s.hxy, s.hx],
+    [-ht2 * s.hxy, 1 - ht2 * s.hyy, s.hy],
+    [-ht2 * s.htx, -ht2 * s.hty, s.ht],
   ]
+  const second: [number, number, number][] = [
+    // [d2(hx), d2(hy), d2(h)] per pair [xx, xy, yy, xt, yt, tt]
+    [s.hxxx, s.hxxy, s.hxx], [s.hxxy, s.hxyy, s.hxy],
+    [s.hxyy, s.hyyy, s.hyy], [s.htxx, s.htxy, s.htx],
+    [s.htxy, s.htyy, s.hty], [s.httx, s.htty, s.htt],
+  ]
+  const Sdd: V3[] = second.map(([a, b, c]): V3 => [-ht2 * a, -ht2 * b, c])
   return {
     C: add(S, scale(n, R)),
     D: [
@@ -131,9 +151,9 @@ interface Frame {
   nPerMass: number
 }
 
-function buildFrame(st: RollingState, surf: SurfaceFnDyn, p: RollingParams, t: number): Frame {
+function buildFrame(st: RollingState, surf: SurfaceFnDyn, p: DynRollingParams, t: number): Frame {
   surf(st.x, st.y, t, sf)
-  const cp = partialsFromField(sf, st.x, st.y, p.radius)
+  const cp = partialsFromField(sf, st.x, st.y, p.radius, p.plateHalfThickness ?? 0)
   const Sx: V3 = [1, 0, sf.hx]
   const sxl = Math.hypot(Sx[0], Sx[1], Sx[2])
   const t1: V3 = [Sx[0] / sxl, Sx[1] / sxl, Sx[2] / sxl]
@@ -148,16 +168,22 @@ function buildFrame(st: RollingState, surf: SurfaceFnDyn, p: RollingParams, t: n
   const wxnd = cross([st.wx, st.wy, st.wz], ndot)
   // K0 parts: Hc + (0,0,grad ht . v) + 2R(n_xt vx + n_yt vy) + R n_tt
   // Recover n_xt etc from C partials: C_xt = (0,0,htx) + R n_xt.
+  // Recover n_xt, n_yt, n_tt from C partials minus the material
+  // surface partials (top-surface aware, M6-25).
+  const ht2 = p.plateHalfThickness ?? 0
   const nXt: V3 = [
-    cp.H[3][0] / p.radius, cp.H[3][1] / p.radius,
+    (cp.H[3][0] + ht2 * sf.htxx) / p.radius,
+    (cp.H[3][1] + ht2 * sf.htxy) / p.radius,
     (cp.H[3][2] - sf.htx) / p.radius,
   ]
   const nYt: V3 = [
-    cp.H[4][0] / p.radius, cp.H[4][1] / p.radius,
+    (cp.H[4][0] + ht2 * sf.htxy) / p.radius,
+    (cp.H[4][1] + ht2 * sf.htyy) / p.radius,
     (cp.H[4][2] - sf.hty) / p.radius,
   ]
   const nTt: V3 = [
-    cp.H[5][0] / p.radius, cp.H[5][1] / p.radius,
+    (cp.H[5][0] + ht2 * sf.httx) / p.radius,
+    (cp.H[5][1] + ht2 * sf.htty) / p.radius,
     (cp.H[5][2] - sf.htt) / p.radius,
   ]
   const K = sub(add(
@@ -171,7 +197,7 @@ function buildFrame(st: RollingState, surf: SurfaceFnDyn, p: RollingParams, t: n
   return { cp, t1, t2, MQ, A0, K, nPerMass: dot(cp.n, A0) + G * cp.n[2] }
 }
 
-function slipVec(st: RollingState, fr: Frame, p: RollingParams): V3 {
+function slipVec(st: RollingState, fr: Frame, p: DynRollingParams): V3 {
   const Jq = add(scale(fr.cp.D[0], st.vx), scale(fr.cp.D[1], st.vy))
   const wxn = cross([st.wx, st.wy, st.wz], fr.cp.n)
   return sub(add(Jq, scale(fr.cp.nD[2], p.radius)), scale(wxn, p.radius))
@@ -190,7 +216,7 @@ function qddForFriction(fr: Frame, f: V3): [number, number] {
   ]
 }
 
-function slipAccelTangential(fr: Frame, p: RollingParams, f: V3): { qdd: [number, number]; udot1: number; udot2: number } {
+function slipAccelTangential(fr: Frame, p: DynRollingParams, f: V3): { qdd: [number, number]; udot1: number; udot2: number } {
   const qdd = qddForFriction(fr, f)
   const Jq = add(scale(fr.cp.D[0], qdd[0]), scale(fr.cp.D[1], qdd[1]))
   return {
@@ -222,7 +248,7 @@ function solve4(A: number[][], b: number[]): number[] {
   return [M[0][4] / M[0][0], M[1][4] / M[1][1], M[2][4] / M[2][2], M[3][4] / M[3][3]]
 }
 
-function rollSolution(fr: Frame, p: RollingParams): { qdd: [number, number]; f: V3 } {
+function rollSolution(fr: Frame, p: DynRollingParams): { qdd: [number, number]; f: V3 } {
   const { cp, MQ, A0, K, t1, t2 } = fr
   const B = (v: V3): [number, number] => [dot(cp.D[0], v), dot(cp.D[1], v)]
   const [b1x, b1y] = B(t1); const [b2x, b2y] = B(t2)
@@ -237,7 +263,7 @@ function rollSolution(fr: Frame, p: RollingParams): { qdd: [number, number]; f: 
   return { qdd: [sol[0], sol[1]], f: add(scale(t1, sol[2]), scale(t2, sol[3])) }
 }
 
-function kineticDyn(fr: Frame, p: RollingParams, dirU: V3, st: RollingState): DynRollingAccel {
+function kineticDyn(fr: Frame, p: DynRollingParams, dirU: V3, st: RollingState): DynRollingAccel {
   const fm = p.muK * fr.nPerMass
   const f: V3 = [-fm * dirU[0], -fm * dirU[1], -fm * dirU[2]]
   const qdd = qddForFriction(fr, f)
@@ -250,7 +276,7 @@ function kineticDyn(fr: Frame, p: RollingParams, dirU: V3, st: RollingState): Dy
 }
 
 export function dynRollingAccel(
-  st: RollingState, surf: SurfaceFnDyn, p: RollingParams, t: number,
+  st: RollingState, surf: SurfaceFnDyn, p: DynRollingParams, t: number,
 ): DynRollingAccel {
   const fr = buildFrame(st, surf, p, t)
   if (fr.nPerMass <= 0) {
@@ -277,7 +303,7 @@ export function dynRollingAccel(
 }
 
 /** Center velocity (for flight transitions / energy). */
-export function dynCenterVelocity(st: RollingState, surf: SurfaceFnDyn, p: RollingParams, t: number, out: V3): void {
+export function dynCenterVelocity(st: RollingState, surf: SurfaceFnDyn, p: DynRollingParams, t: number, out: V3): void {
   const fr = buildFrame(st, surf, p, t)
   const v = add(add(scale(fr.cp.D[0], st.vx), scale(fr.cp.D[1], st.vy)), fr.cp.D[2])
   out[0] = v[0]; out[1] = v[1]; out[2] = v[2]
@@ -308,7 +334,7 @@ function rk4Dyn(s0: RollingState, t: number, h: number, deriv: Deriv): { state: 
   return { state: mk(s0, comb, 1), sawDetach }
 }
 
-function rollDeriv(surf: SurfaceFnDyn, p: RollingParams): Deriv {
+function rollDeriv(surf: SurfaceFnDyn, p: DynRollingParams): Deriv {
   return (st, tt) => {
     const fr = buildFrame(st, surf, p, tt)
     if (fr.nPerMass <= 0) return { d: Float64Array.from([st.vx, st.vy, 0, 0, 0, 0, 0]), detach: true }
@@ -321,7 +347,7 @@ function rollDeriv(surf: SurfaceFnDyn, p: RollingParams): Deriv {
   }
 }
 
-function slipDeriv(surf: SurfaceFnDyn, p: RollingParams, dirHint: V3): Deriv {
+function slipDeriv(surf: SurfaceFnDyn, p: DynRollingParams, dirHint: V3): Deriv {
   return (st, tt) => {
     const fr = buildFrame(st, surf, p, tt)
     if (fr.nPerMass <= 0) return { d: Float64Array.from([st.vx, st.vy, 0, 0, 0, 0, 0]), detach: true }
@@ -340,7 +366,7 @@ function slipDeriv(surf: SurfaceFnDyn, p: RollingParams, dirHint: V3): Deriv {
   }
 }
 
-function rollMarginAt(st: RollingState, surf: SurfaceFnDyn, p: RollingParams, t: number): { margin: number; nPerMass: number } {
+function rollMarginAt(st: RollingState, surf: SurfaceFnDyn, p: DynRollingParams, t: number): { margin: number; nPerMass: number } {
   const fr = buildFrame(st, surf, p, t)
   if (fr.nPerMass <= 0) return { margin: -Infinity, nPerMass: fr.nPerMass }
   const sol = rollSolution(fr, p)
@@ -352,7 +378,7 @@ function rollMarginAt(st: RollingState, surf: SurfaceFnDyn, p: RollingParams, t:
  *  event handling (roll-break, slip-zero, detach), earliest
  *  event first. Same sampling caveat as M6-16. */
 export function stepDynRolling(
-  st: RollingState, surf: SurfaceFnDyn, p: RollingParams, t: number, dt: number,
+  st: RollingState, surf: SurfaceFnDyn, p: DynRollingParams, t: number, dt: number,
 ): DynStepResult {
   let advanced = 0
   for (let iter = 0; iter < 16; iter++) {
@@ -454,7 +480,7 @@ export function stepDynRolling(
   return { mode: aEnd.mode, advanced }
 }
 
-export function dynProjectToRolling(st: RollingState, surf: SurfaceFnDyn, p: RollingParams, t: number): void {
+export function dynProjectToRolling(st: RollingState, surf: SurfaceFnDyn, p: DynRollingParams, t: number): void {
   const fr = buildFrame(st, surf, p, t)
   const u = slipVec(st, fr, p)
   const d = cross(fr.cp.n, u)
