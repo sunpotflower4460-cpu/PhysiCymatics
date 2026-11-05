@@ -362,15 +362,29 @@ export function stepCurvedRolling(
 
     if (a0.mode === 'roll') {
       const deriv = rollDeriv(surf, p)
-      const trial = rk4Curved(start, rem, deriv)
-      const mEnd = rollMarginAt(trial.state, surf, p)
-      const bad = trial.sawDetach || mEnd.nPerMass <= 0 || mEnd.margin < 0
-      if (!bad) {
-        Object.assign(st, trial.state)
+      // M6-26: scan the friction margin at integrated sub-states
+      // (8 sub-fractions), not only at the endpoint: a steep
+      // region crossed and left within one step otherwise passes
+      // as pure rolling. Sampling caveat: episodes narrower than
+      // rem/8 between samples are not detected.
+      let prevFrac = 0; let badFrac = Infinity; let badDetach = false
+      let lastGood: { state: RollingState; sawDetach: boolean } | null = null
+      for (let k = 1; k <= 8; k++) {
+        const f = k / 8
+        const r = rk4Curved(start, rem * f, deriv)
+        const mm = rollMarginAt(r.state, surf, p)
+        if (r.sawDetach || mm.nPerMass <= 0 || mm.margin < 0) {
+          badFrac = f; badDetach = r.sawDetach || mm.nPerMass <= 0
+          break
+        }
+        prevFrac = f; lastGood = r
+      }
+      if (!Number.isFinite(badFrac)) {
+        Object.assign(st, (lastGood as { state: RollingState }).state)
         return { mode: 'roll', advanced: dt }
       }
-      let lo = 0; let hi = 1
-      let detachSide = mEnd.nPerMass <= 0
+      let lo = prevFrac; let hi = badFrac
+      let detachSide = badDetach
       for (let it = 0; it < 50; it++) {
         const mid = 0.5 * (lo + hi)
         const r = rk4Curved(start, rem * mid, deriv)
@@ -399,21 +413,34 @@ export function stepCurvedRolling(
       dirHint = [dir3[0] / dm, dir3[1] / dm, dir3[2] / dm]
     }
     const deriv = slipDeriv(surf, p, dirHint)
-    const trial = rk4Curved(start, rem, deriv)
-    const endA = curvedRollingAccel(trial.state, surf, p)
-    const detachInside = trial.sawDetach || endA.mode === 'detach'
     const signedSlip = (s2: RollingState): number => {
       const fr = buildFrame(s2, surf, p)
       return dot(slipVec(s2, fr, p), dirHint)
     }
-    const zeroInside = us0 >= 1e-12 && signedSlip(trial.state) <= 0
-    if (!detachInside && !zeroInside) {
-      Object.assign(st, trial.state)
+    // M6-26: scan integrated sub-states (8 sub-fractions) for the
+    // first detach / slip-direction crossing, as in rollingDynamic.
+    let prevFrac = 0; let badFrac = Infinity
+    let detachInside = false; let zeroInside = false
+    let lastGood: { state: RollingState; sawDetach: boolean } | null = null
+    for (let k = 1; k <= 8; k++) {
+      const f = k / 8
+      const r = rk4Curved(start, rem * f, deriv)
+      const aa = curvedRollingAccel(r.state, surf, p)
+      const dBad = r.sawDetach || aa.mode === 'detach'
+      const zBad = us0 >= 1e-12 && signedSlip(r.state) <= 0
+      if (dBad || zBad) {
+        badFrac = f; detachInside = dBad; zeroInside = zBad
+        break
+      }
+      prevFrac = f; lastGood = r
+    }
+    if (!Number.isFinite(badFrac)) {
+      Object.assign(st, (lastGood as { state: RollingState }).state)
       return { mode: 'slip', advanced: dt }
     }
     let fracDetach = Infinity
     if (detachInside) {
-      let lo = 0; let hi = 1
+      let lo = prevFrac; let hi = badFrac
       for (let it = 0; it < 50; it++) {
         const mid = 0.5 * (lo + hi)
         const r = rk4Curved(start, rem * mid, deriv)
@@ -424,7 +451,7 @@ export function stepCurvedRolling(
     }
     let fracZero = Infinity
     if (zeroInside) {
-      let lo = 0; let hi = 1
+      let lo = prevFrac; let hi = badFrac
       for (let it = 0; it < 60; it++) {
         const mid = 0.5 * (lo + hi)
         const r = rk4Curved(start, rem * mid, deriv)
@@ -442,8 +469,12 @@ export function stepCurvedRolling(
     const frE = buildFrame(st, surf, p)
     const uE = slipVec(st, frE, p)
     if (Math.hypot(uE[0], uE[1], uE[2]) > 1e-9) {
-      Object.assign(st, trial.state)
-      return { mode: 'slip', advanced: dt }
+      // Direction rotation, not a stop: subdivide here and
+      // re-integrate the remainder with the new slip direction.
+      // A later detach in the remainder is then re-detected
+      // instead of being dropped with the continuation trial.
+      advanced += rem * fracZero
+      continue
     }
     curvedProjectToRolling(st, surf, p)
     advanced += rem * fracZero

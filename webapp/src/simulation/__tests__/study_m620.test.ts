@@ -47,7 +47,7 @@ function agg(stats: ReturnType<GrainCycleSim['stats']>, initials: { x: number; y
   const netContact = live.map((s) => Math.hypot(s.netContactX, s.netContactY))
   return {
     meanNetM: Number(mean((s) => Math.hypot(
-      s.netFlightX + s.netContactX, s.netFlightY + s.netContactY)).toFixed(5)),
+      s.netFlightX + s.netContactX + s.netCorrectionX, s.netFlightY + s.netContactY + s.netCorrectionY)).toFixed(5)),
     meanPathM: Number(mean((s) => s.pathM).toFixed(5)),
     meanNetFlightM: Number((netFlight.reduce((a, v) => a + v, 0) / Math.max(1, live.length)).toFixed(5)),
     meanNetContactM: Number((netContact.reduce((a, v) => a + v, 0) / Math.max(1, live.length)).toFixed(5)),
@@ -55,7 +55,8 @@ function agg(stats: ReturnType<GrainCycleSim['stats']>, initials: { x: number; y
     meanPathContactM: Number(mean((s) => s.pathContactM).toFixed(5)),
     meanImpactImpulse: Number(mean((s) => Math.hypot(s.impactImpulseX, s.impactImpulseY)).toFixed(4)),
     meanContactImpulse: Number(mean((s) => Math.hypot(s.contactImpulseX, s.contactImpulseY)).toFixed(4)),
-    meanContactFrac: Number(mean((s) => s.contactTime).toFixed(3)),
+    meanContactTimeS: Number(mean((s) => s.contactTime).toFixed(4)),
+    meanContactFrac: Number(mean((s) => (s.t > 0 ? s.contactTime / s.t : 0)).toFixed(4)),
     totalImpacts: stats.reduce((a, s) => a + s.impacts, 0),
     totalDetaches: stats.reduce((a, s) => a + s.detaches, 0),
     lost: stats.filter((s) => s.lost).length,

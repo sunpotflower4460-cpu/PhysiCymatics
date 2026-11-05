@@ -38,7 +38,7 @@ describe('M6-22 pair collision effect on transport', () => {
         interparticle: on,
         wallMs: Math.round(performance.now() - t0),
         meanNetM: Number(mean((s) => Math.hypot(
-          s.netFlightX + s.netContactX, s.netFlightY + s.netContactY)).toFixed(5)),
+          s.netFlightX + s.netContactX + s.netCorrectionX, s.netFlightY + s.netContactY + s.netCorrectionY)).toFixed(5)),
         meanPathM: Number(mean((s) => s.pathM).toFixed(5)),
         meanRInit: Number((initials.reduce((a, i2) => a + Math.hypot(i2.x, i2.y), 0)
           / initials.length).toFixed(4)),
@@ -85,7 +85,7 @@ describe('M6-22 ensemble check', () => {
           variant: [v.cx, v.cy, v.rot], interparticle: on,
           wallMs: Math.round(performance.now() - t0),
           meanNetM: Number(mean((s) => Math.hypot(
-            s.netFlightX + s.netContactX, s.netFlightY + s.netContactY)).toFixed(5)),
+            s.netFlightX + s.netContactX + s.netCorrectionX, s.netFlightY + s.netContactY + s.netCorrectionY)).toFixed(5)),
           meanRFinal: Number(mean((s) => Math.hypot(s.x, s.y)).toFixed(4)),
           pairs: stats.reduce((a, s) => a + s.pairCollisions, 0) / 2,
           lost: stats.filter((s) => s.lost).length,

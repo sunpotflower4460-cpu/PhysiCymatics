@@ -308,22 +308,38 @@ export function stepRolling(
     }
     const deriv = slipDeriv(surf, p, dirHint)
     const start: RollingState = { ...st }
-    const trial = rk4Rolling(start, tc, rem, deriv)
-    const endA = rollingAccel(trial.state, surf, p, tc + rem)
-    const detachInside = trial.sawDetach || endA.mode === 'detach'
     const signedSlip = (s2: RollingState, tt: number): number => {
       const u: V3 = [0, 0, 0]
       slipVelocity(s2, surf, p, tt, u)
       return u[0] * dirHint[0] + u[1] * dirHint[1] + u[2] * dirHint[2]
     }
-    const zeroInside = us0 >= 1e-12 && signedSlip(trial.state, tc + rem) <= 0
-    if (!detachInside && !zeroInside) {
-      Object.assign(st, trial.state)
+    // M6-26: scan integrated sub-states (8 sub-fractions) for the
+    // first detach / slip-direction crossing. Endpoint + stage
+    // checks miss a negative-normal interval between stage times,
+    // and a rejected projected zero must not discard a later
+    // detach in the same step.
+    let prevFrac = 0; let badFrac = Infinity
+    let detachInside = false; let zeroInside = false
+    let lastGood: { state: RollingState; sawDetach: boolean } | null = null
+    for (let k = 1; k <= 8; k++) {
+      const f = k / 8
+      const r = rk4Rolling(start, tc, rem * f, deriv)
+      const aa = rollingAccel(r.state, surf, p, tc + rem * f)
+      const dBad = r.sawDetach || aa.mode === 'detach'
+      const zBad = us0 >= 1e-12 && signedSlip(r.state, tc + rem * f) <= 0
+      if (dBad || zBad) {
+        badFrac = f; detachInside = dBad; zeroInside = zBad
+        break
+      }
+      prevFrac = f; lastGood = r
+    }
+    if (!Number.isFinite(badFrac)) {
+      Object.assign(st, (lastGood as { state: RollingState }).state)
       return { mode: 'slip', advanced: dt }
     }
     let fracDetach = Infinity
     if (detachInside) {
-      let lo = 0; let hi = 1
+      let lo = prevFrac; let hi = badFrac
       for (let it = 0; it < 50; it++) {
         const mid = 0.5 * (lo + hi)
         const r = rk4Rolling(start, tc, rem * mid, deriv)
@@ -334,7 +350,7 @@ export function stepRolling(
     }
     let fracZero = Infinity
     if (zeroInside) {
-      let lo = 0; let hi = 1
+      let lo = prevFrac; let hi = badFrac
       for (let it = 0; it < 60; it++) {
         const mid = 0.5 * (lo + hi)
         const r = rk4Rolling(start, tc, rem * mid, deriv)
@@ -352,11 +368,11 @@ export function stepRolling(
     const uEnd: V3 = [0, 0, 0]
     slipVelocity(st, surf, p, tc + rem * fracZero, uEnd)
     if (Math.hypot(uEnd[0], uEnd[1], uEnd[2]) > 1e-9) {
-      // Slip direction rotated without reaching zero slip: not a
-      // rolling transition. Accept the trial (detach already
-      // handled above when it came first).
-      Object.assign(st, trial.state)
-      return { mode: 'slip', advanced: dt }
+      // Direction rotation, not a rolling transition: subdivide
+      // here and re-integrate the remainder with the new slip
+      // direction (a pending detach is re-detected there).
+      advanced += rem * fracZero
+      continue
     }
     projectToRolling(st, surf, p, tc + rem * fracZero)
     advanced += rem * fracZero

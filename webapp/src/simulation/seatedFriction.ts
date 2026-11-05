@@ -294,24 +294,38 @@ export function stepSeated(
       continue // re-evaluate at the stick-break instant (now slip)
     }
 
-    // Slip: trial RK4 over the remainder, watching for events.
+    // Slip: scan RK4 sub-states over the remainder for events
+    // (M6-26). Checking only RK4 stage times and the endpoint
+    // misses a negative-normal-force interval between stage
+    // times, and endpoints alone miss a direction rotation that
+    // returns by the endpoint. Sampling caveat: 8 sub-fractions,
+    // episodes narrower than rem/8 between samples are missed.
     const start: SeatedState = { ...st }
     surf(start.x, start.y, tc, sf)
     const vt0 = tangentialSpeed(start, sf)
     const ezx = start.vx; const ezy = start.vy
-    const trial = rk4Advance(start, surf, p, tc, rem)
-    surf(trial.state.x, trial.state.y, tc + rem, sf)
-    const endAccel = seatedAccel(trial.state, surf, p, tc + rem)
-    const detachInside = trial.sawDetach || endAccel.mode === 'detach'
     // Signed tangential speed along the initial direction.
     const signedSpeed = (s2: SeatedState): number => {
       if (vt0 <= 0) return 0
       return (s2.vx * ezx + s2.vy * ezy) / Math.hypot(ezx, ezy)
     }
-    const stopInside = vt0 > 0 && signedSpeed(trial.state) <= 0
-
-    if (!detachInside && !stopInside) {
-      Object.assign(st, trial.state)
+    let prevFrac = 0; let badFrac = Infinity
+    let detachInside = false; let stopInside = false
+    let lastGood: { state: SeatedState; sawDetach: boolean } | null = null
+    for (let k = 1; k <= 8; k++) {
+      const f = k / 8
+      const r = rk4Advance(start, surf, p, tc, rem * f)
+      const aa = seatedAccel(r.state, surf, p, tc + rem * f)
+      const dBad = r.sawDetach || aa.mode === 'detach'
+      const zBad = vt0 > 0 && signedSpeed(r.state) <= 0
+      if (dBad || zBad) {
+        badFrac = f; detachInside = dBad; stopInside = zBad
+        break
+      }
+      prevFrac = f; lastGood = r
+    }
+    if (!Number.isFinite(badFrac)) {
+      Object.assign(st, (lastGood as { state: SeatedState }).state)
       return { mode: 'slip', advanced: dt }
     }
 
@@ -321,7 +335,7 @@ export function stepSeated(
     // state. Localize both candidate fractions and take the earlier.
     let fracDetach = Infinity
     if (detachInside) {
-      let lo = 0; let hi = 1
+      let lo = prevFrac; let hi = badFrac
       for (let it = 0; it < 50; it++) {
         const mid = 0.5 * (lo + hi)
         const r = rk4Advance(start, surf, p, tc, rem * mid)
@@ -332,7 +346,7 @@ export function stepSeated(
     }
     let fracStop = Infinity
     if (stopInside) {
-      let lo = 0; let hi = 1
+      let lo = prevFrac; let hi = badFrac
       for (let it = 0; it < 60; it++) {
         const mid = 0.5 * (lo + hi)
         const r = rk4Advance(start, surf, p, tc, rem * mid)
@@ -350,16 +364,15 @@ export function stepSeated(
     surf(r.state.x, r.state.y, tc + rem * hi, sf)
     if (tangentialSpeed(r.state, sf) > 1e-9) {
       // Direction rotated through perpendicular without stopping;
-      // not a stop event. But a pending detachment inside the step
-      // must still be processed (M6-14R review) — do not advance
-      // through it with the whole trial step.
-      if (Number.isFinite(fracDetach)) {
-        const rd = rk4Advance(start, surf, p, tc, rem * fracDetach)
-        Object.assign(st, rd.state)
-        return { mode: 'detach', advanced: advanced + rem * fracDetach }
-      }
-      Object.assign(st, trial.state)
-      return { mode: 'slip', advanced: dt }
+      // not a stop event. Subdivide here and re-integrate the
+      // remainder with the actual kinetic-friction direction
+      // (accepting the continuation trial would apply friction
+      // against the old direction and can reverse the transverse
+      // velocity; a pending detach is re-detected in the
+      // remainder instead of being dropped).
+      Object.assign(st, r.state)
+      advanced += rem * hi
+      continue
     }
     Object.assign(st, r.state)
     st.vx = 0; st.vy = 0

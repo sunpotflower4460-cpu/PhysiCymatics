@@ -186,8 +186,17 @@ function buildFrame(st: RollingState, surf: SurfaceFnDyn, p: DynRollingParams, t
     (cp.H[5][1] + ht2 * sf.htty) / p.radius,
     (cp.H[5][2] - sf.htt) / p.radius,
   ]
+  // S_xt*vx + S_yt*vy for the material surface point. With a top
+  // surface (ht2 != 0) this has horizontal components
+  // -ht2*(htxx*vx + htxy*vy) and -ht2*(htxy*vx + htyy*vy); keeping
+  // only the vertical part (pre-M6-26) broke the differentiated
+  // no-slip constraint whenever ht2 and qdot were both nonzero.
   const K = sub(add(
-    add(Hc, [0, 0, sf.htx * st.vx + sf.hty * st.vy]),
+    add(Hc, [
+      -ht2 * (sf.htxx * st.vx + sf.htxy * st.vy),
+      -ht2 * (sf.htxy * st.vx + sf.htyy * st.vy),
+      sf.htx * st.vx + sf.hty * st.vy,
+    ]),
     add(scale(add(scale(nXt, st.vx), scale(nYt, st.vy)), 2 * p.radius),
       scale(nTt, p.radius)),
   ), scale(wxnd, p.radius))
@@ -200,7 +209,16 @@ function buildFrame(st: RollingState, surf: SurfaceFnDyn, p: DynRollingParams, t
 function slipVec(st: RollingState, fr: Frame, p: DynRollingParams): V3 {
   const Jq = add(scale(fr.cp.D[0], st.vx), scale(fr.cp.D[1], st.vy))
   const wxn = cross([st.wx, st.wy, st.wz], fr.cp.n)
-  return sub(add(Jq, scale(fr.cp.nD[2], p.radius)), scale(wxn, p.radius))
+  const raw = sub(add(Jq, scale(fr.cp.nD[2], p.radius)), scale(wxn, p.radius))
+  if ((p.plateHalfThickness ?? 0) === 0) return raw
+  // Linearized top surface: S_x/S_y are not exactly orthogonal to
+  // the mid-surface normal, so raw carries a normal residual of
+  // order ht2*|grad h||H||v| (the documented O(H*curvature)
+  // approximation). Slip is the tangential part; without this
+  // projection the residual alone (>> the 1e-12 zero threshold)
+  // would be misread as slip and would tilt the kinetic-friction
+  // direction out of the tangent plane.
+  return sub(raw, scale(fr.cp.n, dot(raw, fr.cp.n)))
 }
 
 function qddForFriction(fr: Frame, f: V3): [number, number] {
@@ -391,15 +409,30 @@ export function stepDynRolling(
 
     if (a0.mode === 'roll') {
       const deriv = rollDeriv(surf, p)
-      const trial = rk4Dyn(start, tc, rem, deriv)
-      const mEnd = rollMarginAt(trial.state, surf, p, tc + rem)
-      const bad = trial.sawDetach || mEnd.nPerMass <= 0 || mEnd.margin < 0
-      if (!bad) {
-        Object.assign(st, trial.state)
+      // M6-26: scan the friction margin at integrated sub-states,
+      // not only at the endpoint — a margin that goes negative
+      // mid-step and recovers by the endpoint is still a roll
+      // break. Sampling at 8 sub-fractions (same documented
+      // caveat as elsewhere: episodes narrower than rem/8 that
+      // begin and end between samples are not detected).
+      let prevFrac = 0; let badFrac = Infinity; let badDetach = false
+      let lastGood: { state: RollingState; sawDetach: boolean } | null = null
+      for (let k = 1; k <= 8; k++) {
+        const f = k / 8
+        const r = rk4Dyn(start, tc, rem * f, deriv)
+        const mm = rollMarginAt(r.state, surf, p, tc + rem * f)
+        if (r.sawDetach || mm.nPerMass <= 0 || mm.margin < 0) {
+          badFrac = f; badDetach = r.sawDetach || mm.nPerMass <= 0
+          break
+        }
+        prevFrac = f; lastGood = r
+      }
+      if (!Number.isFinite(badFrac)) {
+        Object.assign(st, (lastGood as { state: RollingState }).state)
         return { mode: 'roll', advanced: dt }
       }
-      let lo = 0; let hi = 1
-      let detachSide = mEnd.nPerMass <= 0
+      let lo = prevFrac; let hi = badFrac
+      let detachSide = badDetach
       for (let it = 0; it < 50; it++) {
         const mid = 0.5 * (lo + hi)
         const r = rk4Dyn(start, tc, rem * mid, deriv)
@@ -427,21 +460,37 @@ export function stepDynRolling(
       dirHint = [dir3[0] / dm, dir3[1] / dm, dir3[2] / dm]
     }
     const deriv = slipDeriv(surf, p, dirHint)
-    const trial = rk4Dyn(start, tc, rem, deriv)
-    const endA = dynRollingAccel(trial.state, surf, p, tc + rem)
-    const detachInside = trial.sawDetach || endA.mode === 'detach'
     const signedSlip = (s2: RollingState, tt: number): number => {
       const fr = buildFrame(s2, surf, p, tt)
       return dot(slipVec(s2, fr, p), dirHint)
     }
-    const zeroInside = us0 >= 1e-12 && signedSlip(trial.state, tc + rem) <= 0
-    if (!detachInside && !zeroInside) {
-      Object.assign(st, trial.state)
+    // M6-26: scan integrated sub-states for the first detach or
+    // slip-direction crossing. Checking only RK4 stage times and
+    // the endpoint misses a negative-normal-force interval (or a
+    // direction rotation) that begins and ends between them.
+    // Sampling caveat as in the roll branch (8 sub-fractions).
+    let prevFrac = 0; let badFrac = Infinity
+    let detachInside = false; let zeroInside = false
+    let lastGood: { state: RollingState; sawDetach: boolean } | null = null
+    for (let k = 1; k <= 8; k++) {
+      const f = k / 8
+      const r = rk4Dyn(start, tc, rem * f, deriv)
+      const aa = dynRollingAccel(r.state, surf, p, tc + rem * f)
+      const dBad = r.sawDetach || aa.mode === 'detach'
+      const zBad = us0 >= 1e-12 && signedSlip(r.state, tc + rem * f) <= 0
+      if (dBad || zBad) {
+        badFrac = f; detachInside = dBad; zeroInside = zBad
+        break
+      }
+      prevFrac = f; lastGood = r
+    }
+    if (!Number.isFinite(badFrac)) {
+      Object.assign(st, (lastGood as { state: RollingState }).state)
       return { mode: 'slip', advanced: dt }
     }
     let fracDetach = Infinity
     if (detachInside) {
-      let lo = 0; let hi = 1
+      let lo = prevFrac; let hi = badFrac
       for (let it = 0; it < 50; it++) {
         const mid = 0.5 * (lo + hi)
         const r = rk4Dyn(start, tc, rem * mid, deriv)
@@ -452,7 +501,7 @@ export function stepDynRolling(
     }
     let fracZero = Infinity
     if (zeroInside) {
-      let lo = 0; let hi = 1
+      let lo = prevFrac; let hi = badFrac
       for (let it = 0; it < 60; it++) {
         const mid = 0.5 * (lo + hi)
         const r = rk4Dyn(start, tc, rem * mid, deriv)
@@ -470,8 +519,13 @@ export function stepDynRolling(
     const frE = buildFrame(st, surf, p, tc + rem * fracZero)
     const uE = slipVec(st, frE, p)
     if (Math.hypot(uE[0], uE[1], uE[2]) > 1e-9) {
-      Object.assign(st, trial.state)
-      return { mode: 'slip', advanced: dt }
+      // Slip direction rotated through perpendicular without
+      // stopping. Do NOT accept the continuation trial (its later
+      // stages used the stale dirHint) and do NOT drop a later
+      // detach: subdivide here and re-integrate the remainder
+      // with the new slip direction.
+      advanced += rem * fracZero
+      continue
     }
     dynProjectToRolling(st, surf, p, tc + rem * fracZero)
     advanced += rem * fracZero

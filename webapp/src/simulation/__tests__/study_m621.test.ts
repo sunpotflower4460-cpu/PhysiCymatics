@@ -42,9 +42,9 @@ function run(o: Opts) {
   return {
     wallMs: Math.round(performance.now() - t0),
     meanNetM: Number(mean((s) => Math.hypot(
-      s.netFlightX + s.netContactX, s.netFlightY + s.netContactY)).toFixed(5)),
+      s.netFlightX + s.netContactX + s.netCorrectionX, s.netFlightY + s.netContactY + s.netCorrectionY)).toFixed(5)),
     meanPathM: Number(mean((s) => s.pathM).toFixed(5)),
-    meanR0: Number(mean((_s) => 0).toFixed(4)),
+    meanR0: Number((stats.reduce((a, s, i) => a + (s.lost ? 0 : Math.hypot(o.initials[i].x, o.initials[i].y)), 0) / Math.max(1, live.length)).toFixed(4)),
     meanRFinal: Number((live.reduce((a, s) => a + Math.hypot(s.x, s.y), 0)
       / Math.max(1, live.length)).toFixed(4)),
     meanImpulseMagSum: Number(mean((s) => s.impactImpulseMagSum).toFixed(4)),

@@ -9,7 +9,7 @@
 import { G } from './surface'
 import type { TransientPlate } from './plateTransient'
 import {
-  stepDynRolling, dynCenterPartials, dynCenterVelocity,
+  stepDynRolling, dynCenterPartials, dynCenterVelocity, dynRollingAccel,
   type SurfaceFnDyn,
 } from './rollingDynamic'
 import {
@@ -18,7 +18,7 @@ import {
 } from './rollingImpact'
 import { pairImpact } from './pairImpact'
 import {
-  stepSeated, seatedVz,
+  stepSeated, seatedVz, seatedAccel,
   type SurfaceFn, type SurfaceField, type SeatedState,
 } from './seatedFriction'
 import type { RollingState } from './rollingSphere'
@@ -51,6 +51,16 @@ export interface GrainStats {
   // M6-20 transport decomposition (docs/m6_20_design.md).
   netFlightX: number; netFlightY: number
   netContactX: number; netContactY: number
+  /** M6-26: horizontal displacement from numerical position
+   *  corrections (pair separation pushes), kept separate from
+   *  physical flight/contact displacement. Net displacement is
+   *  flight + contact + correction. */
+  netCorrectionX: number; netCorrectionY: number
+  /** M6-26: seconds left unconsumed by event-limit exhaustion.
+   *  Nonzero means the step failed explicitly (advanceGrain
+   *  throws); such a run must not be used as a measurement. */
+  unconsumedTotal: number
+  failed: boolean
   pathFlightM: number; pathContactM: number
   impactImpulseX: number; impactImpulseY: number
   /** Sum of per-impact |dVh| magnitudes (cancellation analysis). */
@@ -115,6 +125,7 @@ export class GrainCycleSim {
           t: 0, x: ini.x, y: ini.y, pathM: 0,
           impacts: 0, detaches: 0, contactTime: 0, lost: false,
           netFlightX: 0, netFlightY: 0, netContactX: 0, netContactY: 0,
+          netCorrectionX: 0, netCorrectionY: 0, unconsumedTotal: 0, failed: false,
           pathFlightM: 0, pathContactM: 0,
           impactImpulseX: 0, impactImpulseY: 0, impactImpulseMagSum: 0, pairCollisions: 0,
           phaseCosW: 0, phaseSinW: 0, slopeDotSum: 0, slopeMagWSum: 0,
@@ -137,12 +148,23 @@ export class GrainCycleSim {
     this.currentDt = dt
     this.plate.beginStep(t0, t0 + dt)
     if (this.pendingDrops) {
+      const drops = this.pendingDrops
       this.grains.forEach((g, i) => {
-        this.plate.surfAtConsistent(g.fly.cx, g.fly.cy, t0, this.out5)
-        g.fly.cz = this.out5[0]
-          + (this.params.model === 'roll' ? this.params.radius : 0)
-          + (this.params.plateHalfThickness ?? 0)
-          + (this.pendingDrops as number[])[i]
+        if (this.params.model === 'roll') {
+          // M6-26: dropM is the gap along the surface normal to
+          // the (top) surface offset center — the same quantity
+          // sphereGap() measures — for every plate thickness.
+          const ht2 = this.params.plateHalfThickness ?? 0
+          const [qx, qy] = solveContactParams(
+            g.fly.cx, g.fly.cy, this.dynSurf, this.params.radius, t0, undefined, ht2)
+          g.lastQ = [qx, qy]
+          const cp = dynCenterPartials(qx, qy, t0, this.dynSurf, this.params.radius, ht2)
+          const horiz = (g.fly.cx - cp.C[0]) * cp.n[0] + (g.fly.cy - cp.C[1]) * cp.n[1]
+          g.fly.cz = cp.C[2] + (drops[i] - horiz) / cp.n[2]
+        } else {
+          this.plate.surfAtConsistent(g.fly.cx, g.fly.cy, t0, this.out5)
+          g.fly.cz = this.out5[0] + drops[i]
+        }
       })
       this.pendingDrops = null
     }
@@ -186,10 +208,15 @@ export class GrainCycleSim {
   }
 
   private sphereGap(g: Grain, fly: FlightState, tAbs: number): number {
+    // M6-26 (PR #28 P1): both calls must use the same top-surface
+    // offset as the impact response, or flight contact detection
+    // runs against the mid-surface and the sphere penetrates by
+    // plateHalfThickness before receiving an impulse.
+    const ht2 = this.params.plateHalfThickness ?? 0
     const [qx, qy] = solveContactParams(
-      fly.cx, fly.cy, this.dynSurf, this.params.radius, tAbs, g.lastQ ?? undefined)
+      fly.cx, fly.cy, this.dynSurf, this.params.radius, tAbs, g.lastQ ?? undefined, ht2)
     g.lastQ = [qx, qy]
-    const cp = dynCenterPartials(qx, qy, tAbs, this.dynSurf, this.params.radius)
+    const cp = dynCenterPartials(qx, qy, tAbs, this.dynSurf, this.params.radius, ht2)
     return (fly.cx - cp.C[0]) * cp.n[0] + (fly.cy - cp.C[1]) * cp.n[1]
       + (fly.cz - cp.C[2]) * cp.n[2]
   }
@@ -204,19 +231,32 @@ export class GrainCycleSim {
       out.vx = fly.vx; out.vy = fly.vy; out.vz = fly.vz - G * tau
     } else {
       // Linear drag closed form (still air): v' = -gam v - g zhat.
-      const e = Math.exp(-gam * tau)
-      const k = (1 - e) / gam
+      // M6-26: written with expm1 and a small-argument series for
+      // the gravity term so gam -> 0 is continuous with the
+      // no-drag solution. The naive (vz + G/gam)*k - (G/gam)*tau
+      // cancels catastrophically at small gam (dragGamma=1e-8
+      // moved a grain metres in one step).
+      //   k   = tau * phi1(a),  phi1 = (1 - e^-a)/a
+      //   cz += vz*k - G*tau^2*psi(a), psi = (e^-a - 1 + a)/a^2
+      //   vz' = vz*e - G*k
+      const a = gam * tau
+      const e = Math.exp(-a)
+      const phi1 = a === 0 ? 1 : -Math.expm1(-a) / a
+      const k = tau * phi1
+      const psi = a < 1e-3
+        ? 0.5 - a / 6 + (a * a) / 24 - (a ** 3) / 120 + (a ** 4) / 720
+        : (Math.expm1(-a) + a) / (a * a)
       out.cx = fly.cx + fly.vx * k
       out.cy = fly.cy + fly.vy * k
-      out.cz = fly.cz + (fly.vz + G / gam) * k - (G / gam) * tau
+      out.cz = fly.cz + fly.vz * k - G * tau * tau * psi
       out.vx = fly.vx * e; out.vy = fly.vy * e
-      out.vz = (fly.vz + G / gam) * e - G / gam
+      out.vz = fly.vz * e - G * k
     }
     const es = gs === 0 ? 1 : Math.exp(-gs * tau)
     out.wx = fly.wx * es; out.wy = fly.wy * es; out.wz = fly.wz * es
   }
 
-  private advanceGrain(g: Grain, t0: number, dt: number): void {
+  private advanceGrain(g: Grain, t0: number, dt: number, depth = 0): void {
     let rem = dt
     let tc = t0
     for (let iter = 0; iter < 32 && rem > 0; iter++) {
@@ -244,6 +284,24 @@ export class GrainCycleSim {
         g.stats.contactImpulseX += vx1 - vx0
         g.stats.contactImpulseY += vy1 - vy0
       }
+    }
+    if (rem > 0) {
+      // M6-26: the event budget was exhausted with time left.
+      // Pre-M6-26 this silently dropped the remainder while
+      // step() advanced the plate and the clock by the full dt,
+      // corrupting the trajectory. Retry the remainder in two
+      // halves with fresh budgets; if even that fails, fail
+      // explicitly — never present under-advanced state as data.
+      if (depth < 8) {
+        const half = rem / 2
+        this.advanceGrain(g, tc, half, depth + 1)
+        this.advanceGrain(g, tc + half, rem - half, depth + 1)
+        return
+      }
+      g.stats.unconsumedTotal += rem
+      g.stats.failed = true
+      throw new Error(
+        `GrainCycleSim: event budget exhausted at t=${tc} with ${rem}s unconsumed`)
     }
   }
 
@@ -276,8 +334,30 @@ export class GrainCycleSim {
     if (prevGap <= 0) {
       this.doImpact(g, tc)
       if (g.mode === 'contact') return 0
-      // Separating despite the nonpositive gap (numeric overlap):
-      // advance ballistically rather than loop forever.
+      // Separating from a zero/negative gap. "Currently separated"
+      // does NOT imply "no collision in the remainder": an
+      // accelerating plate (or gravity) can close the gap again
+      // within this step (M6-26). Scan the remainder for a fresh
+      // crossing after the gap has become positive; only if the
+      // gap never re-enters is the ballistic advance complete.
+      // (Same CONTACT_SAMPLES shallow-contact caveat as below.)
+      let lastPosTau = -1
+      for (let k = 1; k <= CONTACT_SAMPLES; k++) {
+        const tau = (rem * k) / CONTACT_SAMPLES
+        const gap = gapAt(tau)
+        if (gap > 0) {
+          lastPosTau = tau
+        } else if (lastPosTau >= 0) {
+          let lo = lastPosTau; let hi = tau
+          for (let it = 0; it < 50; it++) {
+            const mid = 0.5 * (lo + hi)
+            if (gapAt(mid) > 0) lo = mid; else hi = mid
+          }
+          this.ballisticAt(fly, hi, fly)
+          this.doImpact(g, tc + hi)
+          return hi
+        }
+      }
       this.ballisticAt(fly, rem, fly)
       return rem
     }
@@ -303,11 +383,16 @@ export class GrainCycleSim {
 
   private doImpact(g: Grain, tc: number): void {
     const p = this.params
-    g.stats.impacts++
+    // M6-26: count only calls that actually apply an impulse.
+    // Counting at entry also counted separating re-calls (the
+    // impact search leaves the grain at a nonpositive gap) and
+    // inflated totals (9 counted vs 5 physical in the e=0.3
+    // flat-drop reference).
     if (p.model === 'roll') {
       const vxPre = g.fly.vx; const vyPre = g.fly.vy
       const r = sphereImpact(g.fly, this.dynSurf, p, tc)
       if (r.mode === 'separating') return
+      g.stats.impacts++
       g.stats.impactImpulseX += g.fly.vx - vxPre
       g.stats.impactImpulseY += g.fly.vy - vyPre
       g.stats.impactImpulseMagSum += Math.hypot(g.fly.vx - vxPre, g.fly.vy - vyPre)
@@ -323,14 +408,23 @@ export class GrainCycleSim {
         + (g.fly.vy + ht2c * this.field.hty) * cp.n[1]
         + (g.fly.vz - this.out5[3]) * cp.n[2]
       // Capture threshold g*dt (docs/m6_19_design.md; exact at e=0).
+      // M6-26: capture only if contact can actually be maintained
+      // at this instant (normal force positive). Capturing while
+      // the plate accelerates away faster than gravity produced
+      // zero-time capture->detach->capture chattering that
+      // exhausted the event budget without consuming time; the
+      // grain correctly remains in flight instead.
       if (unPost <= G * this.currentDt) {
         const vxPre = g.fly.vx; const vyPre = g.fly.vy
-        g.roll = flightToRolling(g.fly, this.dynSurf, p, tc)
-        g.mode = 'contact'
-        const vPost: [number, number, number] = [0, 0, 0]
-        dynCenterVelocity(g.roll, this.dynSurf, p, tc, vPost)
-        g.stats.conversionImpulseX += vPost[0] - vxPre
-        g.stats.conversionImpulseY += vPost[1] - vyPre
+        const cand = flightToRolling(g.fly, this.dynSurf, p, tc)
+        if (dynRollingAccel(cand, this.dynSurf, p, tc).mode !== 'detach') {
+          g.roll = cand
+          g.mode = 'contact'
+          const vPost: [number, number, number] = [0, 0, 0]
+          dynCenterVelocity(g.roll, this.dynSurf, p, tc, vPost)
+          g.stats.conversionImpulseX += vPost[0] - vxPre
+          g.stats.conversionImpulseY += vPost[1] - vyPre
+        }
       }
       return
     }
@@ -343,6 +437,7 @@ export class GrainCycleSim {
     const ux = fly.vx; const uy = fly.vy; const uz = fly.vz - s.ht
     const un = ux * nx + uy * ny + uz * nz
     if (un >= 0) return
+    g.stats.impacts++
     const Jn = -(1 + p.restitution) * un
     const utx = ux - un * nx; const uty = uy - un * ny; const utz = uz - un * nz
     const uts = Math.hypot(utx, uty, utz)
@@ -360,8 +455,12 @@ export class GrainCycleSim {
     this.recordImpactDiag(g, tc, Jn * nx + jfx, Jn * ny + jfy, s.hx, s.hy)
     const unPost = fly.vx * nx + fly.vy * ny + (fly.vz - s.ht) * nz
     if (unPost <= G * this.currentDt) {
-      g.seated = { x: fly.cx, y: fly.cy, vx: fly.vx, vy: fly.vy }
-      g.mode = 'contact'
+      // Same maintainable-contact guard as the roll model (M6-26).
+      const cand: SeatedState = { x: fly.cx, y: fly.cy, vx: fly.vx, vy: fly.vy }
+      if (seatedAccel(cand, this.surfFn, p, tc).mode !== 'detach') {
+        g.seated = cand
+        g.mode = 'contact'
+      }
     }
   }
 
@@ -452,6 +551,13 @@ export class GrainCycleSim {
       const nx = dx / d; const ny = dy / d; const nz = dz / d
       A.cx -= nx * push; A.cy -= ny * push; A.cz -= nz * push
       B.cx += nx * push; B.cy += ny * push; B.cz += nz * push
+      // M6-26: positional separation is a numerical correction,
+      // not flight/contact transport. Account it separately so
+      // flight + contact + correction = actual displacement.
+      grains[pr.i].stats.netCorrectionX -= nx * push
+      grains[pr.i].stats.netCorrectionY -= ny * push
+      grains[pr.j].stats.netCorrectionX += nx * push
+      grains[pr.j].stats.netCorrectionY += ny * push
     }
     // Write back.
     grains.forEach((g, i) => {
@@ -470,9 +576,31 @@ export class GrainCycleSim {
       this.plate.surfAtConsistent(qx, qy, tAbs, this.out5)
       this.plate.surfaceFieldConsistent(qx, qy, tAbs, this.field)
       const ht2p = p.plateHalfThickness ?? 0
-      const un = (f.vx + ht2p * this.field.htx) * cp.n[0]
+      let un = (f.vx + ht2p * this.field.htx) * cp.n[0]
         + (f.vy + ht2p * this.field.hty) * cp.n[1]
         + (f.vz - this.out5[3]) * cp.n[2]
+      // M6-26: a pair impulse can give a contacting grain a large
+      // downward normal velocity (and the separation push can put
+      // it inside the plate). Recapturing it directly would
+      // silently discard that velocity with no plate impulse.
+      // Resolve the plate impact first; capture only what remains
+      // within the usual rebound bound afterwards.
+      if (gap <= 1e-9 && un < -G * this.currentDt) {
+        const vxPre = f.vx; const vyPre = f.vy
+        const imp = sphereImpact(f, this.dynSurf, p, tAbs)
+        if (imp.mode !== 'separating') {
+          g.stats.impacts++
+          g.stats.impactImpulseX += f.vx - vxPre
+          g.stats.impactImpulseY += f.vy - vyPre
+          g.stats.impactImpulseMagSum += Math.hypot(f.vx - vxPre, f.vy - vyPre)
+          this.plate.surfaceFieldConsistent(qx, qy, tAbs, this.field)
+          this.recordImpactDiag(
+            g, tAbs, f.vx - vxPre, f.vy - vyPre, this.field.hx, this.field.hy)
+          un = (f.vx + ht2p * this.field.htx) * cp.n[0]
+            + (f.vy + ht2p * this.field.hty) * cp.n[1]
+            + (f.vz - this.out5[3]) * cp.n[2]
+        }
+      }
       if (gap <= 1e-9 && un <= G * this.currentDt) {
         g.roll = flightToRolling(f, this.dynSurf, p, tAbs)
         g.mode = 'contact'

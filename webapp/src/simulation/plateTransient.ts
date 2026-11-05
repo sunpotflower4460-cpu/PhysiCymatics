@@ -753,6 +753,20 @@ export class TransientPlate {
       }
       return
     }
+    if (r < this.a / this.ng1) {
+      // Center interval: Cartesian polynomial derivatives (M6-26)
+      // instead of the polar Hessian formulas below, whose 1/r
+      // terms cancel analytically but not numerically.
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        const isCos = m === 0 || this.dofCos[j] === 1
+        const d = this.centerPolyDerivs(mi, x, y, isCos)
+        const q = coef[base + j]
+        out.w += q * d[0]; out.wx += q * d[1]; out.wy += q * d[2]
+        out.hxx += q * d[3]; out.hxy += q * d[4]; out.hyy += q * d[5]
+      }
+      return
+    }
     const rs = r < 1e-9 ? 1e-9 : r
     const c = x / rs; const sn = y / rs
     CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
@@ -844,6 +858,89 @@ export class TransientPlate {
     out[3] = (12 * R0 + 6 * drho * D0 - 12 * R1 + 6 * drho * D1) / (drho ** 3)
   }
 
+  /** Center-interval parity coefficients, recomputed exactly as
+   *  radialInterp's k=0 branch: R(rho) = rho^m * P(u),
+   *  u = (rho/L)^2, P = a + b u + c2 u^2, L = 1/ng1. */
+  private centerParityCoeffs(mi: number): { m: number; a: number; b: number; c2: number; L: number } {
+    const stride = BD.ngrid
+    const n = this.ng1
+    const L = 1 / n
+    const R0 = this.Rflat[mi * stride]; const R1 = this.Rflat[mi * stride + 1]
+    const D0 = this.dRflat[mi * stride] * this.a
+    const D1 = this.dRflat[mi * stride + 1] * this.a
+    const m = this.modes[mi].m
+    let a: number; let b: number; let c2: number
+    if (m === 0) { a = R0; c2 = (L * D1) / 2 - (R1 - R0); b = (R1 - R0) - c2 }
+    else if (m === 1) { a = D0; const S = R1 / L; c2 = (D1 - S) / 2 - (S - a); b = (S - a) - c2 }
+    else { c2 = 0; const S = R1 / Math.pow(L, m); b = (D1 / Math.pow(L, m - 1) - m * S) / 2; a = S - b }
+    return { m, a, b, c2, L }
+  }
+
+  /** M6-26: shape derivatives in the center interval by direct
+   *  Cartesian differentiation of its polynomial. With
+   *  zeta = (x+iy)/a and s = zeta*zetaBar = rho^2, the DOF shape
+   *  is Re/Im[ zeta^m (a + beta s + gamma s^2) ] (beta = b/L^2,
+   *  gamma = c2/L^4) — a polynomial in (x, y). The polar
+   *  orthonormal formulas instead subtract terms of order
+   *  1/r^k that cancel analytically; at r=1e-10..1e-11 that
+   *  cancellation produced third-derivative spikes ~1e3x the
+   *  center limit. Returns [W, Wx, Wy, Hxx, Hxy, Hyy, Txxx,
+   *  Txxy, Txyy, Tyyy] with physical (per-metre) derivatives. */
+  private centerPolyDerivs(mi: number, x: number, y: number, isCos: boolean): Float64Array {
+    const { m, a, b, c2, L } = this.centerParityCoeffs(mi)
+    const coefs = [a, b / (L * L), c2 / (L ** 4)]
+    const X = x / this.a; const Y = y / this.a
+    type C = [number, number]
+    const zp: C[] = [[1, 0]]
+    for (let p = 1; p <= m + 2; p++) {
+      const prev = zp[p - 1]
+      zp.push([prev[0] * X - prev[1] * Y, prev[0] * Y + prev[1] * X])
+    }
+    const zb = (p: number): C => [zp[p][0], -zp[p][1]]
+    const fall = (A: number, p: number): number => {
+      let v = 1
+      for (let i = 0; i < p; i++) v *= A - i
+      return v
+    }
+    // Wirtinger derivatives F[p][q] = d^p/dzeta^p d^q/dzetabar^q f
+    const F: C[][] = []
+    for (let p = 0; p <= 3; p++) {
+      F.push([])
+      for (let q = 0; q <= 3 - p; q++) {
+        let re = 0; let im = 0
+        for (let j = 0; j <= 2; j++) {
+          const A = m + j; const B = j
+          if (A < p || B < q || coefs[j] === 0) continue
+          const k = coefs[j] * fall(A, p) * fall(B, q)
+          const za = zp[A - p]; const zbb = zb(B - q)
+          re += k * (za[0] * zbb[0] - za[1] * zbb[1])
+          im += k * (za[0] * zbb[1] + za[1] * zbb[0])
+        }
+        F[p].push([re, im])
+      }
+    }
+    const addC = (...terms: [number, C][]): C => {
+      let re = 0; let im = 0
+      for (const [k, c] of terms) { re += k * c[0]; im += k * c[1] }
+      return [re, im]
+    }
+    const iTimes = (c: C): C => [-c[1], c[0]]
+    const pick = (c: C): number => (isCos ? c[0] : c[1])
+    const a1 = this.a; const a2 = a1 * a1; const a3 = a2 * a1
+    const out = new Float64Array(10)
+    out[0] = pick(F[0][0])
+    out[1] = pick(addC([1, F[1][0]], [1, F[0][1]])) / a1
+    out[2] = pick(iTimes(addC([1, F[1][0]], [-1, F[0][1]]))) / a1
+    out[3] = pick(addC([1, F[2][0]], [2, F[1][1]], [1, F[0][2]])) / a2
+    out[4] = pick(iTimes(addC([1, F[2][0]], [-1, F[0][2]]))) / a2
+    out[5] = pick(addC([-1, F[2][0]], [2, F[1][1]], [-1, F[0][2]])) / a2
+    out[6] = pick(addC([1, F[3][0]], [3, F[2][1]], [3, F[1][2]], [1, F[0][3]])) / a3
+    out[7] = pick(iTimes(addC([1, F[3][0]], [1, F[2][1]], [-1, F[1][2]], [-1, F[0][3]]))) / a3
+    out[8] = pick(addC([-1, F[3][0]], [1, F[2][1]], [1, F[1][2]], [-1, F[0][3]])) / a3
+    out[9] = pick(iTimes(addC([-1, F[3][0]], [3, F[2][1]], [-3, F[1][2]], [1, F[0][3]]))) / a3
+    return out
+  }
+
   /** M6-16: third spatial derivatives of the consistent height.
    *  Polar orthonormal components from the radial derivatives and
    *  angular factors, rotated to Cartesian. The third radial
@@ -874,6 +971,19 @@ export class TransientPlate {
         else if (m === 1) { out.hyyy += 6 * C3 * q; out.hxxy += 2 * C3 * q }
         else if (m === 3 && this.dofCos[j] === 1) { out.hxxx += 6 * C3 * q; out.hxyy -= 6 * C3 * q }
         else { out.hyyy -= 6 * C3 * q; out.hxxy += 6 * C3 * q }
+      }
+      return
+    }
+    if (r < this.a / this.ng1) {
+      // Center interval: cancellation-free Cartesian polynomial
+      // differentiation (M6-26).
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        const isCos = m === 0 || this.dofCos[j] === 1
+        const d = this.centerPolyDerivs(mi, x, y, isCos)
+        const q = this.tauQ[base + j]
+        out.hxxx += q * d[6]; out.hxxy += q * d[7]
+        out.hxyy += q * d[8]; out.hyyy += q * d[9]
       }
       return
     }
@@ -1110,6 +1220,23 @@ export class TransientPlate {
           if (this.dofCos[j] === 1) { out.hxx += q * ddR; out.hyy -= q * ddR }
           else out.hxy += q * ddR
         }
+      }
+      return
+    }
+    if (r < this.a / this.ng1) {
+      // Center interval: Cartesian polynomial derivatives (M6-26),
+      // avoiding the polar Hessian's cancelling 1/r terms.
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        const isCos = m === 0 || this.dofCos[j] === 1
+        const d = this.centerPolyDerivs(mi, x, y, isCos)
+        const q = this.tauQ[base + j]; const qd = this.tauQd[base + j]; const qdd = this.tauQdd[base + j]
+        out.h += q * d[0]
+        out.hx += q * d[1]; out.hy += q * d[2]
+        out.hxx += q * d[3]; out.hxy += q * d[4]; out.hyy += q * d[5]
+        out.ht += qd * d[0]
+        out.htt += qdd * d[0]
+        out.htx += qd * d[1]; out.hty += qd * d[2]
       }
       return
     }
