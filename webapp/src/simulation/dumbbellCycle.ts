@@ -14,6 +14,9 @@ import type { SurfaceField } from './seatedFriction'
 export interface DumbbellCycleParams extends DumbbellParams {
   plateHalfThickness?: number
   diagFreqHz?: number
+  /** Research only: sustained-contact substeps per plate step.
+   *  Omit for the established default (4). */
+  contactSubsteps?: number
 }
 
 export interface DumbbellInitial {
@@ -78,12 +81,18 @@ export class DumbbellCycleSim {
   private grains: Grain[] = []
   private currentDt = 0
   private pendingDrops: number[] | null
+  private readonly contactSubsteps: number
 
   constructor(
     private plate: TransientPlate,
     private params: DumbbellCycleParams,
     initials: DumbbellInitial[],
   ) {
+    const contactSubsteps = params.contactSubsteps ?? CONTACT_SUBSTEPS
+    if (!Number.isInteger(contactSubsteps) || contactSubsteps <= 0) {
+      throw new RangeError('DumbbellCycleSim: contactSubsteps must be a positive integer')
+    }
+    this.contactSubsteps = contactSubsteps
     this.pendingDrops = initials.map((i) => i.dropM)
     this.grains = initials.map((ini) => {
       const em = Math.hypot(...ini.axis) || 1
@@ -331,10 +340,10 @@ export class DumbbellCycleSim {
    *  (docs/m6_27b_design.md). Returns elapsed consumed;
    *  a detach transitions to flight at a substep boundary. */
   private advanceContact(g: Grain, tc: number, rem: number): number {
-    const h = rem / CONTACT_SUBSTEPS
+    const h = rem / this.contactSubsteps
     const e0Params: DumbbellCycleParams = { ...this.params, restitution: 0 }
     let elapsed = 0
-    for (let sub = 0; sub < CONTACT_SUBSTEPS; sub++) {
+    for (let sub = 0; sub < this.contactSubsteps; sub++) {
       const tSub = tc + elapsed
       const infos0 = this.lobeContacts(g, g.st, tSub)
       const activePrev: [boolean, boolean] = [

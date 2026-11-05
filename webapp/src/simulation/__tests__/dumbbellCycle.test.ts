@@ -69,6 +69,25 @@ describe('M6-27B sustained contact (resting flat plate)', () => {
     expect(s.unconsumedTotal).toBe(0)
   })
 
+  it('contactSubsteps: explicit default is identical and invalid counts fail', () => {
+    const initial: DumbbellInitial = {
+      x: 0, y: 0, dropM: 0.001, axis: [Math.SQRT1_2, 0, Math.SQRT1_2],
+    }
+    const baseline = restSim([initial], baseParams(R, 0))
+    const explicit = restSim([initial], { ...baseParams(R, 0), contactSubsteps: 4 })
+    run(baseline, 0.1)
+    run(explicit, 0.1)
+    expect(explicit.stats()).toEqual(baseline.stats())
+    for (const contactSubsteps of [0, -1, 1.5, Number.NaN]) {
+      expect(() => restSim([initial], { ...baseParams(R, 0), contactSubsteps }))
+        .toThrow(RangeError)
+    }
+    const refined = restSim([initial], { ...baseParams(R, 0), contactSubsteps: 8 })
+    run(refined, 0.1)
+    expect(refined.stats()[0].failed).toBe(false)
+    expect(refined.stats()[0].contactTime).toBeGreaterThan(0)
+  })
+
   it('single-lobe pivot: 45-degree dumbbell topples to two-lobe rest without energy gain', () => {
     const p = baseParams(R, 0)
     const sim = restSim([{
