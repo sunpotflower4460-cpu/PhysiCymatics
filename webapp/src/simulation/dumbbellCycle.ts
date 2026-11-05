@@ -29,6 +29,8 @@ export interface DumbbellStats {
   czNow: number; vzNow: number
   ex: number; ey: number; ez: number
   spinMag: number
+  /** Grain mode at the observation step end (measurement only). */
+  modeNow: 'fly' | 'contact' | 'lost'
   pathM: number
   impacts: number
   contactImpulses: number
@@ -97,7 +99,7 @@ export class DumbbellCycleSim {
         stats: {
           x: ini.x, y: ini.y, t: 0, vxNow: st.vx, vyNow: st.vy, czNow: st.cz, vzNow: st.vz,
           ex: st.ex, ey: st.ey, ez: st.ez,
-          spinMag: Math.hypot(st.wx, st.wy, st.wz),
+          spinMag: Math.hypot(st.wx, st.wy, st.wz), modeNow: 'fly',
           pathM: 0, impacts: 0, contactImpulses: 0, detaches: 0,
           contactTime: 0, lost: false,
           netFlightX: 0, netFlightY: 0, netContactX: 0, netContactY: 0,
@@ -143,6 +145,7 @@ export class DumbbellCycleSim {
       s.vxNow = g.st.vx; s.vyNow = g.st.vy; s.czNow = g.st.cz; s.vzNow = g.st.vz
       s.ex = g.st.ex; s.ey = g.st.ey; s.ez = g.st.ez
       s.spinMag = Math.hypot(g.st.wx, g.st.wy, g.st.wz)
+      s.modeNow = g.mode
       s.pathM += Math.hypot(g.st.cx - g.lastX, g.st.cy - g.lastY)
       g.lastX = g.st.cx; g.lastY = g.st.cy
       if (Math.hypot(g.st.cx, g.st.cy) > this.plate.a) {
