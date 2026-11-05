@@ -34,6 +34,9 @@ export interface GrainCycleParams extends ImpactParams {
   /** M6-22: sphere-sphere collisions at plate-step boundaries
    *  (roll model only; approximate, docs/m6_22_design.md). */
   interparticle?: boolean
+  /** M6-24 diagnostics only: drive frequency for impact-phase
+   *  statistics. Measurement input, never a dynamics input. */
+  diagFreqHz?: number
 }
 
 export interface GrainStats {
@@ -54,6 +57,10 @@ export interface GrainStats {
   impactImpulseMagSum: number
   /** M6-22: pair collisions this grain took part in. */
   pairCollisions: number
+  /** M6-24 diagnostics: |dVh|-weighted impact phase sums and
+   *  slope-alignment sums (measurement only). */
+  phaseCosW: number; phaseSinW: number
+  slopeDotSum: number; slopeMagWSum: number
   contactImpulseX: number; contactImpulseY: number
   conversionImpulseX: number; conversionImpulseY: number
   vxNow: number; vyNow: number
@@ -110,6 +117,7 @@ export class GrainCycleSim {
           netFlightX: 0, netFlightY: 0, netContactX: 0, netContactY: 0,
           pathFlightM: 0, pathContactM: 0,
           impactImpulseX: 0, impactImpulseY: 0, impactImpulseMagSum: 0, pairCollisions: 0,
+          phaseCosW: 0, phaseSinW: 0, slopeDotSum: 0, slopeMagWSum: 0,
           contactImpulseX: 0, contactImpulseY: 0,
           conversionImpulseX: 0, conversionImpulseY: 0,
           vxNow: ini.vx ?? 0, vyNow: ini.vy ?? 0,
@@ -238,6 +246,19 @@ export class GrainCycleSim {
     }
   }
 
+  private recordImpactDiag(
+    g: Grain, tc: number, dvx: number, dvy: number, hx: number, hy: number,
+  ): void {
+    const mag = Math.hypot(dvx, dvy)
+    if (this.params.diagFreqHz) {
+      const ph = 2 * Math.PI * this.params.diagFreqHz * tc
+      g.stats.phaseCosW += mag * Math.cos(ph)
+      g.stats.phaseSinW += mag * Math.sin(ph)
+    }
+    g.stats.slopeDotSum += hx * dvx + hy * dvy
+    g.stats.slopeMagWSum += Math.hypot(hx, hy) * mag
+  }
+
   /** Returns elapsed time consumed. */
   private advanceFlight(g: Grain, tc: number, rem: number): number {
     const p = this.params
@@ -294,6 +315,7 @@ export class GrainCycleSim {
       const [qx, qy] = r.contact
       const cp = dynCenterPartials(qx, qy, tc, this.dynSurf, p.radius)
       this.plate.surfAtConsistent(qx, qy, tc, this.out5)
+      this.recordImpactDiag(g, tc, g.fly.vx - vxPre, g.fly.vy - vyPre, this.out5[1], this.out5[2])
       const unPost = g.fly.vx * cp.n[0] + g.fly.vy * cp.n[1]
         + (g.fly.vz - this.out5[3]) * cp.n[2]
       // Capture threshold g*dt (docs/m6_19_design.md; exact at e=0).
@@ -331,6 +353,7 @@ export class GrainCycleSim {
     g.stats.impactImpulseX += Jn * nx + jfx
     g.stats.impactImpulseY += Jn * ny + jfy
     g.stats.impactImpulseMagSum += Math.hypot(Jn * nx + jfx, Jn * ny + jfy)
+    this.recordImpactDiag(g, tc, Jn * nx + jfx, Jn * ny + jfy, s.hx, s.hy)
     const unPost = fly.vx * nx + fly.vy * ny + (fly.vz - s.ht) * nz
     if (unPost <= G * this.currentDt) {
       g.seated = { x: fly.cx, y: fly.cy, vx: fly.vx, vy: fly.vy }
