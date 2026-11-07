@@ -3,7 +3,10 @@
 // qdd + 2*zeta*omega*qd + omega^2 q = Phi(drive)*F(t)/M, RK4 substeps,
 // cubic-Hermite state evaluation inside a sand step.
 import basisData from '../data/plate_modes_transient.json'
-import { ScoreSignal, type PerformanceScore } from './sequence'
+import { ScoreSignal, type PerformanceScore, type DriveEvent } from './sequence'
+import type { SurfaceField } from './seatedFriction'
+import type { SurfaceFieldDyn } from './rollingDynamic'
+import { G } from './surface'
 
 interface ModeRow { m: number; root_idx: number; f_hz: number; M_kg: number; R: number[]; dR_drho: number[] }
 interface BasisData { a_m: number; ngrid: number; zeta: number; modes: ModeRow[] }
@@ -13,6 +16,32 @@ const CM = new Float64Array(6)
 const SM = new Float64Array(6)
 
 export interface Dof { mode: number; kind: 'cos' | 'sin' }
+
+/** Tri-state result of the interval-assisted detach search (M6-12R):
+ *  'found' = first crossing located; 'none' = absence proven by
+ *  interval bounds; 'unknown' = search budget exhausted (absence NOT
+ *  proven). 'unknown' must never be treated as 'none'. */
+export type DetachSearchResult =
+  | { kind: 'found'; t: number }
+  | { kind: 'none' }
+  | { kind: 'unknown' }
+
+/** M6-12 step-boundary plate checkpoint (structured-cloneable). */
+export interface PlateCheckpoint {
+  t: number; epoch: number
+  driveXY: [number, number]
+  accelMode: 'hermite' | 'ode'
+  /** M6-14B: physics geometry switch; absent in older checkpoints. */
+  geometryMode?: 'bin' | 'consistent'
+  scoreKey: string
+  q: Float64Array; qd: Float64Array
+  seg: {
+    t0: number; t1: number
+    q0: Float64Array; qd0: Float64Array
+    q1: Float64Array; qd1: Float64Array
+  } | null
+  counters: [number, number, number]
+}
 
 export class TransientPlate {
   readonly a = BD.a_m
@@ -73,6 +102,56 @@ export class TransientPlate {
   liveCount = 0
   /** A/B measurement switch (bench only): false evaluates all DOFs. */
   liveMaskEnabled = true
+  /** M6-11 research switch: 'ode' evaluates modal acceleration from the
+   *  equation of motion applied to the Hermite q/qd, instead of the
+   *  Hermite second derivative. Only wtt changes (h/uz stay bitwise the
+   *  Hermite values); results are NOT bitwise vs the default. Default
+   *  'hermite' is the production model. See docs/m6_11_results.md.
+   *  Switching invalidates the tau coefficient caches so evaluations
+   *  never mix definitions within a segment. Sim-level caches (sleep
+   *  lookahead) must additionally be invalidated by the caller when
+   *  switching mid-run (wakeAll + refreshForceBounds), exactly as for
+   *  drive-condition changes. */
+  /** M6-14B research switch: 'consistent' reroutes the surface
+   *  evaluators (surfAt/heightAt/heightAtFused/heightAccelAt/
+   *  accelAt) to the geometrically consistent surface. Production
+   *  default 'bin'. Sleep / local non-contact proofs are NOT
+   *  re-derived for this geometry yet — callers must disable them
+   *  (see docs/m6_14_results.md). */
+  geometryMode: 'bin' | 'consistent' = 'bin'
+  private _geoScratch = new Float64Array(5)
+  private _accelMode: 'hermite' | 'ode' = 'hermite'
+  get accelMode(): 'hermite' | 'ode' { return this._accelMode }
+  set accelMode(m: 'hermite' | 'ode') {
+    if (m === this._accelMode) return
+    this._accelMode = m
+    this.invalidateAccelCaches()
+  }
+
+  private computeLiveMask(q0: Float64Array, qd0: Float64Array, q1: Float64Array, qd1: Float64Array, t0: number, t1: number): void {
+    const n = this.ndof
+    let lc = 0
+    if (this.liveMaskEnabled) {
+      let forcedLive = false
+      // Effective acceleration form for THIS segment: tiny segments
+      // (h < 1e-7) use the ODE form in every accel-bearing cache
+      // (modalCoeffs / tauQH fill), so the mask must keep directly
+      // forced DOFs live under the same criterion (M6-12R review).
+      if (this.accelMode === 'ode' || t1 - t0 < 1e-7) {
+        const ts0 = t0 - this.epoch; const ts1 = t1 - this.epoch
+        for (const e of this.signal.score.events) {
+          if (e.forcePeak_N !== 0 && e.start_s <= ts1 && e.end_s >= ts0) { forcedLive = true; break }
+        }
+      }
+      for (let j = 0; j < n; j++) {
+        if (q0[j] !== 0 || qd0[j] !== 0 || q1[j] !== 0 || qd1[j] !== 0
+          || (forcedLive && this.phiDrive[j] !== 0)) this.liveDofs[lc++] = j
+      }
+    } else {
+      for (let j = 0; j < n; j++) this.liveDofs[lc++] = j
+    }
+    this.liveCount = lc
+  }
 
   constructor(score: PerformanceScore, driveXY: [number, number] = [0, 0]) {
     this.signal = new ScoreSignal(score)
@@ -128,7 +207,20 @@ export class TransientPlate {
     return kind === 'cos' ? R * cm : R * sm
   }
 
+  /** Invalidate tau caches and rebuild the live-DOF mask for the
+   *  current segment. Required whenever anything the ODE
+   *  acceleration or the mask's forced-DOF criterion depends on
+   *  changes mid-segment: drive position (phiDrive), score/epoch
+   *  (force events), or accel mode (M6-14R reviews). */
+  private invalidateAccelCaches(): void {
+    this.tauSlotTau.fill(NaN)
+    this.tauSlotTauQH.fill(NaN)
+    const seg = this.seg
+    if (seg) this.computeLiveMask(seg.q0, seg.qd0, seg.q1, seg.qd1, seg.t0, seg.t1)
+  }
+
   setDrive(x: number, y: number): void {
+    const changed = this.driveXY[0] !== x || this.driveXY[1] !== y
     this.driveXY = [x, y]
     const r = Math.hypot(x, y)
     const idx = Math.min((r * (this.ng1 / this.a)) | 0, this.ng1)
@@ -137,12 +229,14 @@ export class TransientPlate {
       const m = this.modes[d.mode].m
       this.phiDrive[j] = this.phi(d.mode, d.kind, idx, Math.cos(m * th), Math.sin(m * th))
     })
+    if (changed) this.invalidateAccelCaches()
   }
 
   /** Replace the score at physics time atTime; q/qd are preserved. */
   setScore(score: PerformanceScore, atTime: number): void {
     this.signal = new ScoreSignal(score)
     this.epoch = atTime
+    this.invalidateAccelCaches()
   }
 
   /** Switch to a single tone at freqHz, phase-continuous with the current
@@ -258,6 +352,29 @@ export class TransientPlate {
     }
   }
 
+  /** Consistent-geometry analogue of phiAll: per-DOF spatial weight
+   *  Rhat(rho) * Theta(theta) from the interpolant (M6-14B). */
+  phiAllConsistent(x: number, y: number, out: Float64Array): void {
+    const r = Math.hypot(x, y)
+    const rs = r < 1e-12 ? 1e-12 : r
+    const c = x / rs; const sn = y / rs
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
+    for (let m = 2; m <= 4; m++) {
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
+    }
+    const ri = new Float64Array(3)
+    let lastMode = -1; let R = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const mi = this.dofMode[j]; const m = this.dofM[j]
+      if (mi !== lastMode) {
+        this.radialInterp(mi, r / this.a, ri)
+        R = ri[0]; lastMode = mi
+      }
+      out[j] = m === 0 ? R : this.dofCos[j] ? R * CM[m] : R * SM[m]
+    }
+  }
+
   private accel(q: Float64Array, qd: Float64Array, t: number, out: Float64Array): void {
     const ts = t - this.epoch
     const F = this.signal.forcePeakAt(ts) * this.signal.u(ts)
@@ -299,30 +416,42 @@ export class TransientPlate {
   }
 
   beginStep(t0: number, t1: number): void {
-    const n = this.ndof
     const q0 = Float64Array.from(this.q); const qd0 = Float64Array.from(this.qd)
     const [q, qd] = this.advanceState(q0, qd0, t0, t1)
     this.q = q; this.qd = qd; this.t = t1
     this.seg = { t0, t1, q0, qd0, q1: Float64Array.from(q), qd1: Float64Array.from(qd) }
+    this.finalizeSegment()
+  }
+
+  /** Derived per-segment state (height bound, tau-cache invalidation,
+   *  live mask, exact q ranges). Shared by beginStep and checkpoint
+   *  restore so both build identical derived state from the endpoints. */
+  private finalizeSegment(): void {
+    const n = this.ndof
+    const { t0, t1, q0, qd0, q1: q, qd1: qd } = this.seg!
     // Conservative |h| bound over the segment (see Python plate_transient).
     // Hermite tangent basis max is 4/27 (at s=1/3), not 0.105.
     let hb = 0
+    // Geometry-aware (M6-14B review): the consistent interpolant
+    // exceeds |Phi|=1 slightly, so weight each DOF by its mode's
+    // conservative max |Rhat| in that geometry.
+    const phiMax = this.geometryMode === 'consistent' ? this.phiMaxConsistent() : null
     for (let j = 0; j < n; j++) {
-      hb += Math.max(Math.abs(q0[j]), Math.abs(q[j])) + (4 / 27) * (t1 - t0) * (Math.abs(qd0[j]) + Math.abs(qd[j]))
+      const wgt = phiMax ? phiMax[this.dofMode[j]] : 1
+      hb += wgt * (Math.max(Math.abs(q0[j]), Math.abs(q[j])) + (4 / 27) * (t1 - t0) * (Math.abs(qd0[j]) + Math.abs(qd[j])))
     }
     this.hBound = hb
     this.tauSlotTau.fill(NaN)
     this.tauSlotTauQ.fill(NaN)
     this.tauSlotTauQH.fill(NaN)
-    let lc = 0
-    if (this.liveMaskEnabled) {
-      for (let j = 0; j < n; j++) {
-        if (q0[j] !== 0 || qd0[j] !== 0 || q[j] !== 0 || qd[j] !== 0) this.liveDofs[lc++] = j
-      }
-    } else {
-      for (let j = 0; j < n; j++) this.liveDofs[lc++] = j
-    }
-    this.liveCount = lc
+    // In 'ode' accel mode a DOF with all-zero Hermite endpoints can
+    // still have nonzero acceleration inside the segment when the
+    // drive force is nonzero there (the RK4 substeps may not sample
+    // a short event). computeLiveMask keeps such DOFs live so every
+    // evaluation path (surfAt / heightAccelAt / accelAt) sums the same
+    // terms; their q/qd contributions are exact zeros, so h/uz are
+    // bitwise unaffected. Default 'hermite' masking is unchanged.
+    this.computeLiveMask(q0, qd0, q, qd, t0, t1)
     for (let j = 0; j < n; j++) {
       const r = hermiteQRange(q0[j], qd0[j], q[j], qd[j], t1 - t0)
       // Widen by a rounding hair for bound use (M6-5R): modalCoeffs
@@ -332,6 +461,62 @@ export class TransientPlate {
       const wden = 1e-12 * (1 + Math.abs(r[0]) + Math.abs(r[1]))
       this.segQMin[j] = r[0] - wden; this.segQMax[j] = r[1] + wden
     }
+  }
+
+  /** M6-12: full plate state at a step boundary (between steps, i.e.
+   *  after a completed beginStep-driven step). Restoring into a plate
+   *  built with the same score/drive reproduces the exact state:
+   *  q/qd, epoch, drive, accel mode, and the last segment with all
+   *  derived state rebuilt by finalizeSegment (no re-integration, so
+   *  a score/frequency switch applied at the boundary is preserved). */
+  checkpointPlate(): PlateCheckpoint {
+    const seg = this.seg
+    return {
+      t: this.t, epoch: this.epoch,
+      driveXY: [this.driveXY[0], this.driveXY[1]],
+      accelMode: this._accelMode,
+      geometryMode: this.geometryMode,
+      scoreKey: JSON.stringify(this.signal.score),
+      q: Float64Array.from(this.q), qd: Float64Array.from(this.qd),
+      seg: seg ? {
+        t0: seg.t0, t1: seg.t1,
+        q0: Float64Array.from(seg.q0), qd0: Float64Array.from(seg.qd0),
+        q1: Float64Array.from(seg.q1), qd1: Float64Array.from(seg.qd1),
+      } : null,
+      counters: [this.surfCalls, this.heightCalls, this.heightAccelCalls],
+    }
+  }
+
+  restorePlate(cp: PlateCheckpoint): void {
+    if (cp.q.length !== this.ndof) throw new Error('checkpoint ndof mismatch')
+    if (cp.scoreKey !== JSON.stringify(this.signal.score)) {
+      throw new Error('checkpoint score mismatch: restore target must use the same score')
+    }
+    this.epoch = cp.epoch
+    this.t = cp.t
+    // Restore the geometry switch BEFORE finalizeSegment (hBound
+    // depends on it); older checkpoints fall back to 'bin'.
+    this.geometryMode = cp.geometryMode ?? 'bin'
+    this.setDrive(cp.driveXY[0], cp.driveXY[1])
+    this.q = Float64Array.from(cp.q); this.qd = Float64Array.from(cp.qd)
+    this.sliceCache = null
+    if (cp.seg) {
+      this.seg = {
+        t0: cp.seg.t0, t1: cp.seg.t1,
+        q0: Float64Array.from(cp.seg.q0), qd0: Float64Array.from(cp.seg.qd0),
+        q1: Float64Array.from(cp.seg.q1), qd1: Float64Array.from(cp.seg.qd1),
+      }
+      this.finalizeSegment()
+    } else {
+      this.seg = null
+      this.tauSlotTau.fill(NaN); this.tauSlotTauQ.fill(NaN); this.tauSlotTauQH.fill(NaN)
+    }
+    // Set the mode last via the public setter: it invalidates tau
+    // caches and rebuilds the live mask for the restored segment
+    // (finalizeSegment already built it under the previous mode;
+    // the setter is a no-op when the mode already matches).
+    this.accelMode = cp.accelMode
+    this.surfCalls = cp.counters[0]; this.heightCalls = cp.counters[1]; this.heightAccelCalls = cp.counters[2]
   }
 
   /** Exact per-DOF q range over the current segment (M6-5 local bound). */
@@ -396,6 +581,22 @@ export class TransientPlate {
     const Rr = -12 * s + 6; const Ss = (6 * s - 2) * hseg
     const hh = hseg * hseg
     const { q0, qd0, q1, qd1 } = seg
+    // Tiny segments (h < 1e-7 s) always use the ODE form: the Hermite
+    // qdd divides by h^2 and degenerates into cancellation garbage as
+    // h -> 0, while the ODE form is its stable limit (M6-11R).
+    if (this.accelMode === 'ode' || hseg < 1e-7) {
+      const ts = tau - this.epoch
+      const Fd = this.signal.forcePeakAt(ts) * this.signal.u(ts)
+      for (let j = 0; j < n; j++) {
+        const qv = A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]
+        const qdv = (E * q0[j] + F * qd0[j] + Gc * q1[j] + H * qd1[j]) / hseg
+        this.tauQ[base + j] = qv
+        this.tauQd[base + j] = qdv
+        this.tauQdd[base + j] = (this.phiDrive[j] * Fd) / this.mass[j]
+          - 2 * this.zeta * this.omega[j] * qdv - this.omega[j] ** 2 * qv
+      }
+      return base
+    }
     for (let j = 0; j < n; j++) {
       this.tauQ[base + j] = A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]
       this.tauQd[base + j] = (E * q0[j] + F * qd0[j] + Gc * q1[j] + H * qd1[j]) / hseg
@@ -409,6 +610,7 @@ export class TransientPlate {
    *  modalCoeffs(), spatial weights use flattened tables and reused
    *  scratch. Arithmetic and summation order match surfAtReference. */
   surfAt(x: number, y: number, tau: number, out: Float64Array): void {
+    if (this.geometryMode === 'consistent') { this.surfAtConsistent(x, y, tau, out); return }
     this.surfCalls++
     const seg = this.seg
     if (!seg) { out.fill(0); return }
@@ -443,6 +645,644 @@ export class TransientPlate {
     out[0] = hh; out[1] = hx; out[2] = hy; out[3] = uz; out[4] = wtt
   }
 
+  /** M6-14 RESEARCH ONLY (not used by the sim): cubic Hermite radial
+   *  interpolation on the nodal grid. The tables R[k], dR[k] are nodal
+   *  values/slopes at rho_k = k/ng1 (sand_bounce.make_mode samples
+   *  linspace(0,1,ngrid)); the production path instead treats them as
+   *  piecewise-constant bins. Returns [R, dR/drho, d2R/drho2] of the
+   *  interpolant — C1 continuous, gradient exactly its own derivative.
+   *  Python evaluation vs the analytic Bessel eigenfunction:
+   *  max |dR| error ~1e-10 vs ~1e-2 for the bin scheme
+   *  (tests/test_m6_14_geometry.py). */
+  radialInterp(mi: number, rho: number, out: Float64Array): void {
+    const stride = BD.ngrid
+    const n = this.ng1
+    const x = Math.min(Math.max(rho, 0), 1) * n
+    const k = Math.min(x | 0, n - 1)
+    const u = x - k
+    const drho = 1 / n
+    const R0 = this.Rflat[mi * stride + k]; const R1 = this.Rflat[mi * stride + k + 1]
+    // dRflat stores dR/drho / a; recover per-rho slopes.
+    const D0 = this.dRflat[mi * stride + k] * this.a
+    const D1 = this.dRflat[mi * stride + k + 1] * this.a
+    if (k === 0) {
+      // Center interval (M6-14R): a plain cubic in rho does not
+      // respect the polar parity R ~ rho^m * (even in rho), which
+      // makes the cartesian field non-smooth at the origin (e.g.
+      // m=1 Hessian undefined). Use R = rho^m * P(u), u=(rho/L)^2,
+      // P quadratic, matching nodal value/slope at L and the center
+      // condition for the mode's m. C1 with the next interval.
+      const m = this.modes[mi].m
+      const L = drho; const rho = u * L
+      let a: number; let b: number; let c2: number
+      if (m === 0) {
+        a = R0; c2 = (L * D1) / 2 - (R1 - R0); b = (R1 - R0) - c2
+      } else if (m === 1) {
+        a = D0; const S = R1 / L
+        c2 = (D1 - S) / 2 - (S - a); b = (S - a) - c2
+      } else {
+        c2 = 0; const S = R1 / Math.pow(L, m)
+        b = (D1 / Math.pow(L, m - 1) - m * S) / 2; a = S - b
+      }
+      const uu = (rho / L) * (rho / L)
+      const P = a + b * uu + c2 * uu * uu
+      const dP = (b + 2 * c2 * uu) * (2 * rho / (L * L))
+      const ddP = 2 * c2 * (2 * rho / (L * L)) * (2 * rho / (L * L))
+        + (b + 2 * c2 * uu) * (2 / (L * L))
+      if (rho === 0) {
+        out[0] = m === 0 ? a : 0
+        out[1] = m === 1 ? a : 0
+        out[2] = m === 0 ? 2 * b / (L * L) : m === 2 ? 2 * a : 0
+        return
+      }
+      const rm = Math.pow(rho, m)
+      const rm1 = m >= 1 ? Math.pow(rho, m - 1) : 0
+      const rm2 = m >= 2 ? Math.pow(rho, m - 2) : 0
+      out[0] = rm * P
+      out[1] = m * rm1 * P + rm * dP
+      out[2] = m * (m - 1) * rm2 * P + 2 * m * rm1 * dP + rm * ddP
+      return
+    }
+    const u2 = u * u; const u3 = u2 * u
+    const h00 = 2 * u3 - 3 * u2 + 1; const h10 = u3 - 2 * u2 + u
+    const h01 = -2 * u3 + 3 * u2; const h11 = u3 - u2
+    out[0] = h00 * R0 + h10 * drho * D0 + h01 * R1 + h11 * drho * D1
+    const d00 = 6 * u2 - 6 * u; const d10 = 3 * u2 - 4 * u + 1
+    const d01 = -6 * u2 + 6 * u; const d11 = 3 * u2 - 2 * u
+    out[1] = (d00 * R0 + d10 * drho * D0 + d01 * R1 + d11 * drho * D1) / drho
+    const dd00 = 12 * u - 6; const dd10 = 6 * u - 4
+    const dd01 = -12 * u + 6; const dd11 = 6 * u - 2
+    out[2] = (dd00 * R0 + dd10 * drho * D0 + dd01 * R1 + dd11 * drho * D1) / (drho * drho)
+  }
+
+  /** M6-14 RESEARCH ONLY: surfAt with the geometrically consistent
+   *  radial interpolation. Same modal time coefficients as surfAt;
+   *  only the spatial shape evaluation differs, so differences vs
+   *  surfAt isolate the geometry representation. out = same layout
+   *  as surfAt [h, hx, hy, wt, wtt]. */
+  /** M6-17: consistent field (value/gradient/Hessian) summed with
+   *  a chosen modal coefficient set: q (h), qd (ht), or qdd (htt).
+   *  Same spatial math as surfaceFieldConsistent. */
+  private evalFieldWith(
+    x: number, y: number, tau: number, kind: 'q' | 'qd' | 'qdd',
+    out: { w: number; wx: number; wy: number; hxx: number; hxy: number; hyy: number },
+  ): void {
+    out.w = 0; out.wx = 0; out.wy = 0; out.hxx = 0; out.hxy = 0; out.hyy = 0
+    if (!this.seg) return
+    const base = this.modalCoeffs(tau)
+    const coef = kind === 'q' ? this.tauQ : kind === 'qd' ? this.tauQd : this.tauQdd
+    const r = Math.hypot(x, y)
+    const ri = new Float64Array(3)
+    if (r < 1e-12) {
+      let lastMode = -1; let R = 0; let dR = 0; let ddR = 0
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        if (mi !== lastMode) {
+          this.radialInterp(mi, 0, ri)
+          R = ri[0]; dR = ri[1] / this.a; ddR = ri[2] / (this.a * this.a)
+          lastMode = mi
+        }
+        const q = coef[base + j]
+        if (m === 0) { out.w += q * R; out.hxx += q * ddR; out.hyy += q * ddR }
+        else if (m === 1) {
+          if (this.dofCos[j] === 1) out.wx += q * dR; else out.wy += q * dR
+        } else if (m === 2) {
+          if (this.dofCos[j] === 1) { out.hxx += q * ddR; out.hyy -= q * ddR }
+          else out.hxy += q * ddR
+        }
+      }
+      return
+    }
+    if (r < this.a / this.ng1) {
+      // Center interval: Cartesian polynomial derivatives (M6-26)
+      // instead of the polar Hessian formulas below, whose 1/r
+      // terms cancel analytically but not numerically.
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        const isCos = m === 0 || this.dofCos[j] === 1
+        const d = this.centerPolyDerivs(mi, x, y, isCos)
+        const q = coef[base + j]
+        out.w += q * d[0]; out.wx += q * d[1]; out.wy += q * d[2]
+        out.hxx += q * d[3]; out.hxy += q * d[4]; out.hyy += q * d[5]
+      }
+      return
+    }
+    const rs = r < 1e-9 ? 1e-9 : r
+    const c = x / rs; const sn = y / rs
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
+    for (let m = 2; m <= 4; m++) {
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
+    }
+    let lastMode = -1; let R = 0; let dR = 0; let ddR = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const mi = this.dofMode[j]; const m = this.dofM[j]
+      if (mi !== lastMode) {
+        this.radialInterp(mi, rs / this.a, ri)
+        R = ri[0]; dR = ri[1] / this.a; ddR = ri[2] / (this.a * this.a)
+        lastMode = mi
+      }
+      const cm = m === 0 ? 1 : CM[m]; const sm = m === 0 ? 0 : SM[m]
+      const isCos = m === 0 || this.dofCos[j] === 1
+      const Th = m === 0 ? 1 : isCos ? cm : sm
+      const ThT = m === 0 ? 0 : isCos ? -m * sm : m * cm
+      const ThTT = m === 0 ? 0 : -m * m * Th
+      const W = R * Th
+      const Wr = dR * Th
+      const Wt = (R * ThT) / rs
+      const Wx = Wr * c - Wt * sn
+      const Wy = Wr * sn + Wt * c
+      const Hrr = ddR * Th
+      const Hrt = (dR * ThT) / rs - (R * ThT) / (rs * rs)
+      const Htt = (R * ThTT) / (rs * rs) + dR * Th / rs
+      const q = coef[base + j]
+      out.w += q * W
+      out.wx += q * Wx; out.wy += q * Wy
+      out.hxx += q * (Hrr * c * c - 2 * Hrt * c * sn + Htt * sn * sn)
+      out.hyy += q * (Hrr * sn * sn + 2 * Hrt * c * sn + Htt * c * c)
+      out.hxy += q * ((Hrr - Htt) * c * sn + Hrt * (c * c - sn * sn))
+    }
+  }
+
+  /** M6-17: full dynamic field for rolling on the consistent
+   *  surface (docs/m6_17_design.md): spatial derivatives of h to
+   *  3rd order, of ht to 2nd, of htt to 1st. Research path only;
+   *  tau is the segment-local time used by the other consistent
+   *  evaluators. Third derivatives jump at radial nodes. */
+  surfaceFieldDynamicConsistent(x: number, y: number, tau: number, out: SurfaceFieldDyn): void {
+    const f = {
+      h: 0, hx: 0, hy: 0, hxx: 0, hxy: 0, hyy: 0, ht: 0, htt: 0, htx: 0, hty: 0,
+    }
+    this.surfaceFieldConsistent(x, y, tau, f)
+    out.h = f.h; out.hx = f.hx; out.hy = f.hy
+    out.hxx = f.hxx; out.hxy = f.hxy; out.hyy = f.hyy
+    out.ht = f.ht; out.htt = f.htt; out.htx = f.htx; out.hty = f.hty
+    const t3 = { hxxx: 0, hxxy: 0, hxyy: 0, hyyy: 0 }
+    this.surfaceThirdConsistent(x, y, tau, t3)
+    out.hxxx = t3.hxxx; out.hxxy = t3.hxxy; out.hxyy = t3.hxyy; out.hyyy = t3.hyyy
+    const e = { w: 0, wx: 0, wy: 0, hxx: 0, hxy: 0, hyy: 0 }
+    this.evalFieldWith(x, y, tau, 'qd', e)
+    out.htxx = e.hxx; out.htxy = e.hxy; out.htyy = e.hyy
+    this.evalFieldWith(x, y, tau, 'qdd', e)
+    out.httx = e.wx; out.htty = e.wy
+  }
+
+  /** M6-16: radial interpolant with third derivative per rho.
+   *  Hermite intervals: the third derivative is piecewise constant
+   *  (jumps at nodes — documented, docs/m6_16_design.md). Center
+   *  parity interval differentiated in power form.
+   *  out = [R, dR, ddR, dddR]. */
+  radialInterp3(mi: number, rho: number, out: Float64Array): void {
+    this.radialInterp(mi, rho, out)
+    const stride = BD.ngrid
+    const n = this.ng1
+    const x = Math.min(Math.max(rho, 0), 1) * n
+    const k = Math.min(x | 0, n - 1)
+    const drho = 1 / n
+    const R0 = this.Rflat[mi * stride + k]; const R1 = this.Rflat[mi * stride + k + 1]
+    const D0 = this.dRflat[mi * stride + k] * this.a
+    const D1 = this.dRflat[mi * stride + k + 1] * this.a
+    if (k === 0) {
+      const m = this.modes[mi].m
+      const L = drho
+      let a: number; let b: number; let c2: number
+      if (m === 0) { a = R0; c2 = (L * D1) / 2 - (R1 - R0); b = (R1 - R0) - c2 }
+      else if (m === 1) { a = D0; const S = R1 / L; c2 = (D1 - S) / 2 - (S - a); b = (S - a) - c2 }
+      else { c2 = 0; const S = R1 / Math.pow(L, m); b = (D1 / Math.pow(L, m - 1) - m * S) / 2; a = S - b }
+      const r = Math.min(Math.max(rho, 0), 1)
+      const d3 = (coef: number, kk: number): number =>
+        kk < 3 ? 0 : coef * kk * (kk - 1) * (kk - 2) * Math.pow(r, kk - 3)
+      out[3] = d3(a, m) + d3(b / (L * L), m + 2) + d3(c2 / (L ** 4), m + 4)
+      return
+    }
+    out[3] = (12 * R0 + 6 * drho * D0 - 12 * R1 + 6 * drho * D1) / (drho ** 3)
+  }
+
+  /** Center-interval parity coefficients, recomputed exactly as
+   *  radialInterp's k=0 branch: R(rho) = rho^m * P(u),
+   *  u = (rho/L)^2, P = a + b u + c2 u^2, L = 1/ng1. */
+  private centerParityCoeffs(mi: number): { m: number; a: number; b: number; c2: number; L: number } {
+    const stride = BD.ngrid
+    const n = this.ng1
+    const L = 1 / n
+    const R0 = this.Rflat[mi * stride]; const R1 = this.Rflat[mi * stride + 1]
+    const D0 = this.dRflat[mi * stride] * this.a
+    const D1 = this.dRflat[mi * stride + 1] * this.a
+    const m = this.modes[mi].m
+    let a: number; let b: number; let c2: number
+    if (m === 0) { a = R0; c2 = (L * D1) / 2 - (R1 - R0); b = (R1 - R0) - c2 }
+    else if (m === 1) { a = D0; const S = R1 / L; c2 = (D1 - S) / 2 - (S - a); b = (S - a) - c2 }
+    else { c2 = 0; const S = R1 / Math.pow(L, m); b = (D1 / Math.pow(L, m - 1) - m * S) / 2; a = S - b }
+    return { m, a, b, c2, L }
+  }
+
+  /** M6-26: shape derivatives in the center interval by direct
+   *  Cartesian differentiation of its polynomial. With
+   *  zeta = (x+iy)/a and s = zeta*zetaBar = rho^2, the DOF shape
+   *  is Re/Im[ zeta^m (a + beta s + gamma s^2) ] (beta = b/L^2,
+   *  gamma = c2/L^4) — a polynomial in (x, y). The polar
+   *  orthonormal formulas instead subtract terms of order
+   *  1/r^k that cancel analytically; at r=1e-10..1e-11 that
+   *  cancellation produced third-derivative spikes ~1e3x the
+   *  center limit. Returns [W, Wx, Wy, Hxx, Hxy, Hyy, Txxx,
+   *  Txxy, Txyy, Tyyy] with physical (per-metre) derivatives. */
+  private centerPolyDerivs(mi: number, x: number, y: number, isCos: boolean): Float64Array {
+    const { m, a, b, c2, L } = this.centerParityCoeffs(mi)
+    const coefs = [a, b / (L * L), c2 / (L ** 4)]
+    const X = x / this.a; const Y = y / this.a
+    type C = [number, number]
+    const zp: C[] = [[1, 0]]
+    for (let p = 1; p <= m + 2; p++) {
+      const prev = zp[p - 1]
+      zp.push([prev[0] * X - prev[1] * Y, prev[0] * Y + prev[1] * X])
+    }
+    const zb = (p: number): C => [zp[p][0], -zp[p][1]]
+    const fall = (A: number, p: number): number => {
+      let v = 1
+      for (let i = 0; i < p; i++) v *= A - i
+      return v
+    }
+    // Wirtinger derivatives F[p][q] = d^p/dzeta^p d^q/dzetabar^q f
+    const F: C[][] = []
+    for (let p = 0; p <= 3; p++) {
+      F.push([])
+      for (let q = 0; q <= 3 - p; q++) {
+        let re = 0; let im = 0
+        for (let j = 0; j <= 2; j++) {
+          const A = m + j; const B = j
+          if (A < p || B < q || coefs[j] === 0) continue
+          const k = coefs[j] * fall(A, p) * fall(B, q)
+          const za = zp[A - p]; const zbb = zb(B - q)
+          re += k * (za[0] * zbb[0] - za[1] * zbb[1])
+          im += k * (za[0] * zbb[1] + za[1] * zbb[0])
+        }
+        F[p].push([re, im])
+      }
+    }
+    const addC = (...terms: [number, C][]): C => {
+      let re = 0; let im = 0
+      for (const [k, c] of terms) { re += k * c[0]; im += k * c[1] }
+      return [re, im]
+    }
+    const iTimes = (c: C): C => [-c[1], c[0]]
+    const pick = (c: C): number => (isCos ? c[0] : c[1])
+    const a1 = this.a; const a2 = a1 * a1; const a3 = a2 * a1
+    const out = new Float64Array(10)
+    out[0] = pick(F[0][0])
+    out[1] = pick(addC([1, F[1][0]], [1, F[0][1]])) / a1
+    out[2] = pick(iTimes(addC([1, F[1][0]], [-1, F[0][1]]))) / a1
+    out[3] = pick(addC([1, F[2][0]], [2, F[1][1]], [1, F[0][2]])) / a2
+    out[4] = pick(iTimes(addC([1, F[2][0]], [-1, F[0][2]]))) / a2
+    out[5] = pick(addC([-1, F[2][0]], [2, F[1][1]], [-1, F[0][2]])) / a2
+    out[6] = pick(addC([1, F[3][0]], [3, F[2][1]], [3, F[1][2]], [1, F[0][3]])) / a3
+    out[7] = pick(iTimes(addC([1, F[3][0]], [1, F[2][1]], [-1, F[1][2]], [-1, F[0][3]]))) / a3
+    out[8] = pick(addC([-1, F[3][0]], [1, F[2][1]], [1, F[1][2]], [-1, F[0][3]])) / a3
+    out[9] = pick(iTimes(addC([-1, F[3][0]], [3, F[2][1]], [-3, F[1][2]], [1, F[0][3]]))) / a3
+    return out
+  }
+
+  /** M6-16: third spatial derivatives of the consistent height.
+   *  Polar orthonormal components from the radial derivatives and
+   *  angular factors, rotated to Cartesian. The third radial
+   *  derivative jumps at radial nodes, so these are piecewise
+   *  defined there. */
+  surfaceThirdConsistent(
+    x: number, y: number, tau: number,
+    out: { hxxx: number; hxxy: number; hxyy: number; hyyy: number },
+  ): void {
+    out.hxxx = 0; out.hxxy = 0; out.hxyy = 0; out.hyyy = 0
+    const seg = this.seg
+    if (!seg) return
+    const base = this.modalCoeffs(tau)
+    const r = Math.hypot(x, y)
+    const ri = new Float64Array(4)
+    if (r < 1e-12) {
+      let lastMode = -1; let C3 = 0
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        if (m !== 1 && m !== 3) continue
+        if (mi !== lastMode) {
+          this.radialInterp3(mi, 0, ri)
+          C3 = (ri[3] / 6) / (this.a ** 3)
+          lastMode = mi
+        }
+        const q = this.tauQ[base + j]
+        if (m === 1 && this.dofCos[j] === 1) { out.hxxx += 6 * C3 * q; out.hxyy += 2 * C3 * q }
+        else if (m === 1) { out.hyyy += 6 * C3 * q; out.hxxy += 2 * C3 * q }
+        else if (m === 3 && this.dofCos[j] === 1) { out.hxxx += 6 * C3 * q; out.hxyy -= 6 * C3 * q }
+        else { out.hyyy -= 6 * C3 * q; out.hxxy += 6 * C3 * q }
+      }
+      return
+    }
+    if (r < this.a / this.ng1) {
+      // Center interval: cancellation-free Cartesian polynomial
+      // differentiation (M6-26).
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        const isCos = m === 0 || this.dofCos[j] === 1
+        const d = this.centerPolyDerivs(mi, x, y, isCos)
+        const q = this.tauQ[base + j]
+        out.hxxx += q * d[6]; out.hxxy += q * d[7]
+        out.hxyy += q * d[8]; out.hyyy += q * d[9]
+      }
+      return
+    }
+    const c = x / r; const sn = y / r
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
+    for (let m = 2; m <= 4; m++) {
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
+    }
+    const basis: [number, number][] = [[c, sn], [-sn, c]] // e_r, e_t
+    let lastMode = -1; let R = 0; let dR = 0; let ddR = 0; let dddR = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const mi = this.dofMode[j]; const m = this.dofM[j]
+      if (mi !== lastMode) {
+        this.radialInterp3(mi, r / this.a, ri)
+        R = ri[0]; dR = ri[1] / this.a; ddR = ri[2] / (this.a ** 2); dddR = ri[3] / (this.a ** 3)
+        lastMode = mi
+      }
+      const isCos = m === 0 || this.dofCos[j] === 1
+      const Th = m === 0 ? 1 : isCos ? CM[m] : SM[m]
+      const ThT = m === 0 ? 0 : isCos ? -m * SM[m] : m * CM[m]
+      const fT = R * ThT
+      const frT = dR * ThT
+      const frrT = ddR * ThT
+      const fTT = -m * m * R * Th
+      const frTT = -m * m * dR * Th
+      const fTTT = -m * m * R * ThT
+      const r2 = r * r; const r3 = r2 * r
+      // Symmetric polar components indexed by number of t indices.
+      const Tp = [
+        dddR * Th,
+        frrT / r - 2 * frT / r2 + 2 * fT / r3,
+        frTT / r2 - 2 * fTT / r3 + ddR * Th / r - dR * Th / r2,
+        fTTT / r3 + 3 * frT / r2 - 2 * fT / r3,
+      ]
+      const q = this.tauQ[base + j]
+      const comp = (i0: number, i1: number, i2: number): number => {
+        let s = 0
+        for (let i = 0; i < 2; i++) for (let jj = 0; jj < 2; jj++) for (let k = 0; k < 2; k++) {
+          s += Tp[i + jj + k] * basis[i][i0] * basis[jj][i1] * basis[k][i2]
+        }
+        return s
+      }
+      out.hxxx += q * comp(0, 0, 0)
+      out.hxxy += q * comp(0, 0, 1)
+      out.hxyy += q * comp(0, 1, 1)
+      out.hyyy += q * comp(1, 1, 1)
+    }
+  }
+
+  private _phiMaxConsistent: Float64Array | null = null
+  /** M6-14B: conservative per-mode max |Rhat(rho)| for the
+   *  consistent interpolant. Hermite intervals use the Bernstein
+   *  control-polygon bound (max |control point| >= max |cubic|);
+   *  the parity center interval uses |rho^m P(u)| <= L^m(|a|+|b|+|c|).
+   *  This replaces the production |Phi|<=1 assumption, which the
+   *  interpolant violates slightly (measured max ~1.000004). */
+  phiMaxConsistent(): Float64Array {
+    if (this._phiMaxConsistent) return this._phiMaxConsistent
+    const stride = BD.ngrid; const n = this.ng1; const drho = 1 / n
+    const out = new Float64Array(this.modes.length)
+    const ri = new Float64Array(3)
+    for (let mi = 0; mi < this.modes.length; mi++) {
+      let mx = 0
+      for (let k = 0; k < n; k++) {
+        const R0 = this.Rflat[mi * stride + k]; const R1 = this.Rflat[mi * stride + k + 1]
+        const D0 = this.dRflat[mi * stride + k] * this.a
+        const D1 = this.dRflat[mi * stride + k + 1] * this.a
+        if (k === 0) {
+          // Triangle bound from the parity coefficients: recompute
+          // a,b,c exactly as radialInterp does.
+          const m = this.modes[mi].m; const L = drho
+          let a: number; let b: number; let c2: number
+          if (m === 0) { a = R0; c2 = (L * D1) / 2 - (R1 - R0); b = (R1 - R0) - c2 }
+          else if (m === 1) { a = D0; const S = R1 / L; c2 = (D1 - S) / 2 - (S - a); b = (S - a) - c2 }
+          else { c2 = 0; const S = R1 / Math.pow(L, m); b = (D1 / Math.pow(L, m - 1) - m * S) / 2; a = S - b }
+          mx = Math.max(mx, Math.pow(L, m) * (Math.abs(a) + Math.abs(b) + Math.abs(c2)))
+        } else {
+          const p1 = R0 + (drho * D0) / 3; const p2 = R1 - (drho * D1) / 3
+          mx = Math.max(mx, Math.abs(R0), Math.abs(p1), Math.abs(p2), Math.abs(R1))
+        }
+      }
+      // Rounding hair: bounds must never understate.
+      out[mi] = mx * (1 + 1e-12) + 1e-15
+      void ri
+    }
+    this._phiMaxConsistent = out
+    return out
+  }
+
+  /** M6-14B: conservative [min,max] of Rhat over rho in [rho0,rho1]
+   *  (single mode). Hermite sub-intervals: endpoints plus exact
+   *  derivative-root evaluations. The parity center interval falls
+   *  back to the symmetric triangle bound. Basis for a consistent
+   *  analogue of cellPhiRanges. */
+  radialRangeConsistent(mi: number, rho0: number, rho1: number, out: Float64Array): void {
+    const n = this.ng1; const drho = 1 / n
+    const ri = new Float64Array(3)
+    let lo = Infinity; let hi = -Infinity
+    const eat = (v: number) => { if (v < lo) lo = v; if (v > hi) hi = v }
+    const k0 = Math.max(0, Math.min(n - 1, Math.floor(rho0 * n)))
+    const k1 = Math.max(0, Math.min(n - 1, Math.floor(rho1 * n)))
+    for (let k = k0; k <= k1; k++) {
+      const a0 = Math.max(rho0, k * drho); const a1 = Math.min(rho1, (k + 1) * drho)
+      if (k === 0) {
+        const B = this.phiMaxConsistent()[mi]
+        eat(-B); eat(B)
+        this.radialInterp(mi, a1, ri); eat(ri[0])
+        continue
+      }
+      // Hermite cubic on this sub-interval: extrema where the
+      // derivative (quadratic in u) vanishes.
+      const stride = BD.ngrid
+      const R0 = this.Rflat[mi * stride + k]; const R1 = this.Rflat[mi * stride + k + 1]
+      const D0 = this.dRflat[mi * stride + k] * this.a
+      const D1 = this.dRflat[mi * stride + k + 1] * this.a
+      this.radialInterp(mi, a0, ri); eat(ri[0])
+      this.radialInterp(mi, a1, ri); eat(ri[0])
+      const A = 6 * (R0 - R1) + 3 * drho * (D0 + D1)
+      const Bq = -6 * R0 + 6 * R1 + drho * (-4 * D0 - 2 * D1)
+      const C = drho * D0
+      const roots: number[] = []
+      if (Math.abs(A) < 1e-300) { if (Bq !== 0) roots.push(-C / Bq) }
+      else {
+        const disc = Bq * Bq - 4 * A * C
+        if (disc >= 0) { const sq = Math.sqrt(disc); roots.push((-Bq - sq) / (2 * A), (-Bq + sq) / (2 * A)) }
+      }
+      for (const u of roots) {
+        const rho = (k + u) * drho
+        if (u > 0 && u < 1 && rho >= a0 && rho <= a1) {
+          this.radialInterp(mi, rho, ri); eat(ri[0])
+        }
+      }
+    }
+    out[0] = lo; out[1] = hi
+  }
+
+  surfAtConsistent(x: number, y: number, tau: number, out: Float64Array): void {
+    const seg = this.seg
+    if (!seg) { out.fill(0); return }
+    const base = this.modalCoeffs(tau)
+    const r = Math.hypot(x, y)
+    if (r < 1e-12) {
+      // Exact center limits (M6-14R): m=0 contributes height only;
+      // m=1 contributes a finite gradient (dRho/drho at 0)/a along
+      // its angular direction; m>=2 contributes nothing.
+      const ri0 = new Float64Array(3)
+      let hh = 0; let hx = 0; let hy = 0; let uz = 0; let wtt = 0
+      let lastMode = -1; let R = 0; let dR = 0
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        if (mi !== lastMode) {
+          this.radialInterp(mi, 0, ri0)
+          R = ri0[0]; dR = ri0[1] / this.a
+          lastMode = mi
+        }
+        const q = this.tauQ[base + j]; const qd = this.tauQd[base + j]; const qdd = this.tauQdd[base + j]
+        if (m === 0) { hh += q * R; uz += qd * R; wtt += qdd * R }
+        else if (m === 1) {
+          if (this.dofCos[j]) hx += q * dR; else hy += q * dR
+        }
+      }
+      out[0] = hh; out[1] = hx; out[2] = hy; out[3] = uz; out[4] = wtt
+      return
+    }
+    const rs = r < 1e-12 ? 1e-12 : r
+    const c = x / rs; const sn = y / rs
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
+    for (let m = 2; m <= 4; m++) {
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
+    }
+    const ri = new Float64Array(3)
+    let hh = 0; let hx = 0; let hy = 0; let uz = 0; let wtt = 0
+    let lastMode = -1; let R = 0; let dR = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const mi = this.dofMode[j]; const m = this.dofM[j]
+      if (mi !== lastMode) {
+        this.radialInterp(mi, r / this.a, ri)
+        R = ri[0]; dR = ri[1] / this.a
+        lastMode = mi
+      }
+      let W: number; let Wx: number; let Wy: number
+      if (m === 0) {
+        W = R; Wx = dR * c; Wy = dR * sn
+      } else {
+        const cm = CM[m]; const sm = SM[m]
+        let Wr: number; let Wt: number
+        if (this.dofCos[j]) { W = R * cm; Wr = dR * cm; Wt = (-m * R * sm) / rs }
+        else { W = R * sm; Wr = dR * sm; Wt = (m * R * cm) / rs }
+        Wx = Wr * c - Wt * sn; Wy = Wr * sn + Wt * c
+      }
+      const q = this.tauQ[base + j]; const qd = this.tauQd[base + j]; const qdd = this.tauQdd[base + j]
+      hh += q * W; hx += q * Wx; hy += q * Wy; uz += qd * W; wtt += qdd * W
+    }
+    out[0] = hh; out[1] = hx; out[2] = hy; out[3] = uz; out[4] = wtt
+  }
+
+  /** M6-14 RESEARCH ONLY: full consistent surface field (height,
+   *  gradient, Hessian, time derivatives) from the same interpolated
+   *  height — the input shape seatedFriction expects. Hessian via
+   *  polar orthonormal components rotated to cartesian. At r ~ 0 the
+   *  polar formulas use the guarded radius (finite limits exist for
+   *  every mode order; exact-center values are accurate for m=0 and
+   *  approximate within O(r_guard) for m>0). */
+  surfaceFieldConsistent(x: number, y: number, tau: number, out: SurfaceField): void {
+    const seg = this.seg
+    out.h = 0; out.hx = 0; out.hy = 0; out.hxx = 0; out.hxy = 0; out.hyy = 0
+    out.ht = 0; out.htt = 0; out.htx = 0; out.hty = 0
+    if (!seg) return
+    const base = this.modalCoeffs(tau)
+    const r = Math.hypot(x, y)
+    if (r < 1e-12) {
+      // Exact center limits (M6-14R): m=0 -> isotropic Hessian
+      // ddR*I; m=1 -> finite gradient, zero Hessian; m=2 -> finite
+      // traceless Hessian (ddR on the cos/sin axes); m>=3 -> zero.
+      const ri0 = new Float64Array(3)
+      let lastMode = -1; let R = 0; let dR = 0; let ddR = 0
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        if (mi !== lastMode) {
+          this.radialInterp(mi, 0, ri0)
+          R = ri0[0]; dR = ri0[1] / this.a; ddR = ri0[2] / (this.a * this.a)
+          lastMode = mi
+        }
+        const q = this.tauQ[base + j]; const qd = this.tauQd[base + j]; const qdd = this.tauQdd[base + j]
+        if (m === 0) {
+          out.h += q * R; out.ht += qd * R; out.htt += qdd * R
+          out.hxx += q * ddR; out.hyy += q * ddR
+        } else if (m === 1) {
+          if (this.dofCos[j] === 1) { out.hx += q * dR; out.htx += qd * dR }
+          else { out.hy += q * dR; out.hty += qd * dR }
+        } else if (m === 2) {
+          if (this.dofCos[j] === 1) { out.hxx += q * ddR; out.hyy -= q * ddR }
+          else out.hxy += q * ddR
+        }
+      }
+      return
+    }
+    if (r < this.a / this.ng1) {
+      // Center interval: Cartesian polynomial derivatives (M6-26),
+      // avoiding the polar Hessian's cancelling 1/r terms.
+      for (let j = 0; j < this.ndof; j++) {
+        const mi = this.dofMode[j]; const m = this.dofM[j]
+        const isCos = m === 0 || this.dofCos[j] === 1
+        const d = this.centerPolyDerivs(mi, x, y, isCos)
+        const q = this.tauQ[base + j]; const qd = this.tauQd[base + j]; const qdd = this.tauQdd[base + j]
+        out.h += q * d[0]
+        out.hx += q * d[1]; out.hy += q * d[2]
+        out.hxx += q * d[3]; out.hxy += q * d[4]; out.hyy += q * d[5]
+        out.ht += qd * d[0]
+        out.htt += qdd * d[0]
+        out.htx += qd * d[1]; out.hty += qd * d[2]
+      }
+      return
+    }
+    const rs = r < 1e-9 ? 1e-9 : r
+    const c = x / rs; const sn = y / rs
+    CM[0] = 1; CM[1] = c; SM[0] = 0; SM[1] = sn
+    for (let m = 2; m <= 4; m++) {
+      CM[m] = CM[m - 1] * c - SM[m - 1] * sn
+      SM[m] = SM[m - 1] * c + CM[m - 1] * sn
+    }
+    const ri = new Float64Array(3)
+    let lastMode = -1; let R = 0; let dR = 0; let ddR = 0
+    for (let j = 0; j < this.ndof; j++) {
+      const mi = this.dofMode[j]; const m = this.dofM[j]
+      if (mi !== lastMode) {
+        this.radialInterp(mi, rs / this.a, ri)
+        R = ri[0]; dR = ri[1] / this.a; ddR = ri[2] / (this.a * this.a)
+        lastMode = mi
+      }
+      const cm = m === 0 ? 1 : CM[m]; const sm = m === 0 ? 0 : SM[m]
+      const isCos = m === 0 || this.dofCos[j] === 1
+      const Th = m === 0 ? 1 : isCos ? cm : sm
+      const ThT = m === 0 ? 0 : isCos ? -m * sm : m * cm        // dTheta/dtheta
+      const ThTT = m === 0 ? 0 : -m * m * Th
+      const W = R * Th
+      const Wr = dR * Th
+      const Wt = (R * ThT) / rs
+      const Wx = Wr * c - Wt * sn
+      const Wy = Wr * sn + Wt * c
+      // Polar Hessian (orthonormal basis) -> cartesian.
+      const Hrr = ddR * Th
+      const Hrt = (dR * ThT) / rs - (R * ThT) / (rs * rs)
+      const Htt = (R * ThTT) / (rs * rs) + dR * Th / rs
+      const Hxx = Hrr * c * c - 2 * Hrt * c * sn + Htt * sn * sn
+      const Hyy = Hrr * sn * sn + 2 * Hrt * c * sn + Htt * c * c
+      const Hxy = (Hrr - Htt) * c * sn + Hrt * (c * c - sn * sn)
+      const q = this.tauQ[base + j]; const qd = this.tauQd[base + j]; const qdd = this.tauQdd[base + j]
+      out.h += q * W
+      out.hx += q * Wx; out.hy += q * Wy
+      out.hxx += q * Hxx; out.hxy += q * Hxy; out.hyy += q * Hyy
+      out.ht += qd * W
+      out.htt += qdd * W
+      out.htx += qd * Wx; out.hty += qd * Wy
+    }
+  }
+
   /** q-only modal coefficients (M6-6): identical A..D expressions to
    *  modalCoeffs, so the returned q values are bitwise the same; only
    *  the qd/qdd work is skipped. Separate slot cache. */
@@ -475,6 +1315,7 @@ export class TransientPlate {
    *  Used where only the height is compared (contact sampling and
    *  bisection); the contact resolution itself still uses surfAt. */
   heightAt(x: number, y: number, tau: number): number {
+    if (this.geometryMode === 'consistent') { this.surfAtConsistent(x, y, tau, this._geoScratch); return this._geoScratch[0] }
     this.heightCalls++
     const seg = this.seg
     if (!seg) return 0
@@ -512,6 +1353,24 @@ export class TransientPlate {
     const Rr = -12 * s + 6; const Ss = (6 * s - 2) * hseg
     const hh = hseg * hseg
     const { q0, qd0, q1, qd1 } = seg
+    // Tiny segments (h < 1e-7 s) always use the ODE form: the Hermite
+    // qdd divides by h^2 and degenerates into cancellation garbage as
+    // h -> 0, while the ODE form is its stable limit (M6-11R).
+    if (this.accelMode === 'ode' || hseg < 1e-7) {
+      const E = 6 * s2 - 6 * s; const F = (3 * s2 - 4 * s + 1) * hseg
+      const Gc = -6 * s2 + 6 * s; const H = (3 * s2 - 2 * s) * hseg
+      const ts = tau - this.epoch
+      const Fd = this.signal.forcePeakAt(ts) * this.signal.u(ts)
+      for (let t = 0; t < this.liveCount; t++) {
+        const j = this.liveDofs[t]
+        const qv = A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]
+        const qdv = (E * q0[j] + F * qd0[j] + Gc * q1[j] + H * qd1[j]) / hseg
+        this.tauQH[base + j] = qv
+        this.tauQddH[base + j] = (this.phiDrive[j] * Fd) / this.mass[j]
+          - 2 * this.zeta * this.omega[j] * qdv - this.omega[j] ** 2 * qv
+      }
+      return base
+    }
     for (let t = 0; t < this.liveCount; t++) {
       const j = this.liveDofs[t]
       this.tauQH[base + j] = A * q0[j] + B * qd0[j] + C * q1[j] + D * qd1[j]
@@ -539,6 +1398,11 @@ export class TransientPlate {
    *  surfAt's out[0] and out[4] (same W, same summation order).
    *  Used by the sitting detach check, which needs exactly these two. */
   heightAccelAt(x: number, y: number, tau: number, out2: Float64Array): void {
+    if (this.geometryMode === 'consistent') {
+      this.surfAtConsistent(x, y, tau, this._geoScratch)
+      out2[0] = this._geoScratch[0]; out2[1] = this._geoScratch[4]
+      return
+    }
     this.heightAccelCalls++
     if (!this.seg) { out2[0] = 0; out2[1] = 0; return }
     const base = this.modalCoeffsQH(tau)
@@ -563,6 +1427,7 @@ export class TransientPlate {
    *  cache cannot hit. Sample evaluations keep using heightAt so
    *  shared sample taus still hit the cache. */
   heightAtFused(x: number, y: number, tau: number): number {
+    if (this.geometryMode === 'consistent') { this.surfAtConsistent(x, y, tau, this._geoScratch); return this._geoScratch[0] }
     this.heightCalls++
     const seg = this.seg
     if (!seg) return 0
@@ -587,6 +1452,7 @@ export class TransientPlate {
 
   /** wtt at (x, y, tau) only (M6-7C): bitwise identical to surfAt's out[4]. */
   accelAt(x: number, y: number, tau: number): number {
+    if (this.geometryMode === 'consistent') { this.surfAtConsistent(x, y, tau, this._geoScratch); return this._geoScratch[4] }
     this.heightAccelCalls++
     if (!this.seg) return 0
     const base = this.modalCoeffsQH(tau)
@@ -601,6 +1467,228 @@ export class TransientPlate {
       wtt += this.tauQddH[base + j] * W
     }
     return wtt
+  }
+
+  /** Evaluation counter for wttLowerBound (research accounting). */
+  wttBoundCalls = 0
+  private boundPhi: Float64Array | null = null
+
+  /** Conservative lower bound of the *implemented* wtt at fixed (x, y)
+   *  over [ta, tb] inside the current segment. Hermite form is linear
+   *  in tau, so its bound is the exact endpoint minimum. The ODE form
+   *  (also used for tiny segments) is bounded by interval evaluation
+   *  of the equation of motion over the exact Hermite q/qd ranges on
+   *  the subinterval and the drive-force bound |F| <= max overlapping
+   *  forcePeak, widened by a rounding hair (same construction as
+   *  lookaheadRanges). Returns -Infinity when no segment is active. */
+  wttLowerBound(x: number, y: number, ta: number, tb: number): number {
+    const seg = this.seg
+    if (!seg) return -Infinity
+    this.wttBoundCalls++
+    const hseg = seg.t1 - seg.t0
+    if (this.accelMode !== 'ode' && hseg >= 1e-7) {
+      return Math.min(this.accelAt(x, y, ta), this.accelAt(x, y, tb))
+    }
+    const n = this.ndof
+    const baseA = this.modalCoeffs(ta)
+    const qa = this.tauQ.slice(baseA, baseA + n)
+    const qda = this.tauQd.slice(baseA, baseA + n)
+    const baseB = this.modalCoeffs(tb)
+    const qb = this.tauQ.slice(baseB, baseB + n)
+    const qdb = this.tauQd.slice(baseB, baseB + n)
+    if (!this.boundPhi) this.boundPhi = new Float64Array(n)
+    const phi = this.boundPhi
+    // Geometry-aware (M6-14B review): the bound must use the same
+    // spatial weights as the acceleration being bounded.
+    if (this.geometryMode === 'consistent') this.phiAllConsistent(x, y, phi)
+    else this.phiAll(x, y, phi)
+    const [fLo, fHi] = this.forceRange(ta, tb)
+    const h = tb - ta
+    let lb = 0
+    for (let j = 0; j < n; j++) {
+      const rq = hermiteQRange(qa[j], qda[j], qb[j], qdb[j], h)
+      const rd = hermiteQdRange(qa[j], qda[j], qb[j], qdb[j], h)
+      const w = this.omega[j]
+      const c = this.phiDrive[j] / this.mass[j]
+      const dLo = Math.min(c * fLo, c * fHi); const dHi = Math.max(c * fLo, c * fHi)
+      let lo = dLo - 2 * this.zeta * w * rd[1] - w * w * rq[1]
+      let hi = dHi - 2 * this.zeta * w * rd[0] - w * w * rq[0]
+      // Rounding hair: the discrepancy between modalCoeffs' evaluation
+      // order and the exact range math is ulp-scale on q (~1e-20 abs)
+      // amplified by w^2 (~1e-12 abs per DOF). 1e-12 relative matches
+      // the segQRange widening; the former 1e-9 left an unprovable
+      // ~1e-5 m/s2 band around the detach threshold (M6-12R).
+      const wd = 1e-12 * (1 + Math.abs(lo) + Math.abs(hi))
+      lo -= wd; hi += wd
+      lb += Math.min(phi[j] * lo, phi[j] * hi)
+    }
+    return lb
+  }
+
+  /** Conservative [min, max] of the drive force F(t) over [ta, tb]
+   *  (physics times). Within one score event the envelope is
+   *  up-then-flat-then-down and the phase is monotone, so exact ranges
+   *  follow from endpoints plus plateau/extremum containment. Across
+   *  event boundaries (or outside events) fall back to the global
+   *  |F| <= max overlapping forcePeak bound. */
+  private forceRange(ta: number, tb: number): [number, number] {
+    const ts0 = ta - this.epoch; const ts1 = tb - this.epoch
+    const sig = this.signal
+    // Split at every event boundary inside the interval and union the
+    // per-piece exact ranges (force is 0 outside events). Without the
+    // split, a subinterval straddling a boundary would keep the loose
+    // global bound at any width and interval refinement could never
+    // conclude around short events (M6-12R).
+    const cuts = [ts0, ts1]
+    for (const e of sig.score.events) {
+      if (e.start_s > ts0 && e.start_s < ts1) cuts.push(e.start_s)
+      if (e.end_s > ts0 && e.end_s < ts1) cuts.push(e.end_s)
+    }
+    cuts.sort((a, b) => a - b)
+    let lo = Infinity; let hi = -Infinity
+    for (let ci = 0; ci + 1 < cuts.length; ci++) {
+      const a = cuts[ci]; const b = cuts[ci + 1]
+      const hit = sig.eventAt(a) ?? sig.eventAt(0.5 * (a + b))
+      if (!hit) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); continue }
+      const [plo, phi] = this.forceRangeInEvent(hit.ev, a, b)
+      lo = Math.min(lo, plo); hi = Math.max(hi, phi)
+    }
+    // Include exact endpoint force values (eventAt is start-inclusive).
+    const fA = sig.forcePeakAt(ts0) * sig.u(ts0)
+    const fB = sig.forcePeakAt(ts1) * sig.u(ts1)
+    lo = Math.min(lo, fA, fB); hi = Math.max(hi, fA, fB)
+    return [lo, hi]
+  }
+
+  /** Exact force range on [ts0, ts1] fully inside one score event. */
+  private forceRangeInEvent(ev: DriveEvent, ts0: number, ts1: number): [number, number] {
+    const sig = this.signal
+    // Envelope replica of ScoreSignal.u (smoothstep attack/release).
+    const envAt = (t: number): number => {
+      let env = 1
+      if (ev.attack_s > 0 && t < ev.start_s + ev.attack_s) {
+        const u = (t - ev.start_s) / ev.attack_s
+        env = Math.min(env, u * u * (3 - 2 * u))
+      }
+      if (ev.release_s > 0 && t > ev.end_s - ev.release_s) {
+        const u = (ev.end_s - t) / ev.release_s
+        env = Math.min(env, u * u * (3 - 2 * u))
+      }
+      return env
+    }
+    let eLo = Math.min(envAt(ts0), envAt(ts1))
+    let eHi = Math.max(envAt(ts0), envAt(ts1))
+    if (ts0 < ev.end_s - ev.release_s && ts1 > ev.start_s + ev.attack_s) eHi = 1
+    // Overlapping attack/release (attack+release > duration, or a
+    // sub-interval inside the overlap): env = min(increasing attack,
+    // decreasing release) peaks where the two ramps cross, below 1.
+    // smooth() is monotone, so the crossing solves
+    // (t-start)/attack = (end-t)/release (M6-12R review).
+    if (ev.attack_s > 0 && ev.release_s > 0) {
+      const tc = (ev.release_s * ev.start_s + ev.attack_s * ev.end_s) / (ev.attack_s + ev.release_s)
+      if (tc >= ts0 && tc <= ts1) eHi = Math.max(eHi, envAt(tc))
+    }
+    if (eLo < 0) eLo = 0
+    if (eHi > 1) eHi = 1
+    const thA = sig.thetaAt(ts0); const thB = sig.thetaAt(ts1)
+    let sLo = Math.min(Math.sin(thA), Math.sin(thB))
+    let sHi = Math.max(Math.sin(thA), Math.sin(thB))
+    if (thB - thA >= 2 * Math.PI) { sLo = -1; sHi = 1 } else {
+      const k0 = Math.ceil((thA - Math.PI / 2) / (2 * Math.PI))
+      if (Math.PI / 2 + 2 * Math.PI * k0 <= thB) sHi = 1
+      const k1 = Math.ceil((thA - 3 * Math.PI / 2) / (2 * Math.PI))
+      if (3 * Math.PI / 2 + 2 * Math.PI * k1 <= thB) sLo = -1
+    }
+    const pLo = sLo >= 0 ? eLo * sLo : eHi * sLo
+    const pHi = sHi >= 0 ? eHi * sHi : eLo * sHi
+    const F = ev.forcePeak_N
+    return F >= 0 ? [F * pLo, F * pHi] : [F * pHi, F * pLo]
+  }
+
+  /** First time in [ta, tb] (inside the current segment) at which the
+   *  implemented wtt at fixed (x, y) crosses below -G.
+   *  Tri-state result (M6-12R): 'found' (first crossing, time order
+   *  guaranteed), 'none' (proven: every subinterval either sampled
+   *  clear with a wttLowerBound proof), or 'unknown' (bound budget
+   *  exhausted before a proof completed — NOT a proof of absence;
+   *  callers must retry with more budget or fail explicitly).
+   *  Scan subintervals are resolved strictly left-to-right: a later
+   *  sampled crossing is never accepted before earlier subintervals
+   *  are proven clear or yield an earlier root. Roots inside a
+   *  1e-11 s window are located by bisection (time error <= window). */
+  /** True when the current segment's acceleration uses the ODE form:
+   *  explicit 'ode' mode, or the tiny-segment (h < 1e-7) stable
+   *  fallback. Callers that assume wtt linear in time (Hermite form)
+   *  must not run when this is true. Canonical steps are never tiny,
+   *  so default-mode production stepping always returns false here. */
+  /** Whether a Hermite segment is currently active (between
+   *  beginStep and the next one). Measurement helpers use this to
+   *  decide whether surface evaluation at the current time is valid. */
+  hasSegment(): boolean { return this.seg !== null }
+
+  odeFormActive(): boolean {
+    return this.accelMode === 'ode' || (!!this.seg && this.seg.t1 - this.seg.t0 < 1e-7)
+  }
+
+  firstDetachBelow(x: number, y: number, ta: number, tb: number, budgetIn = 2048): DetachSearchResult {
+    if (!this.seg) return { kind: 'unknown' }
+    const bisect = (a: number, b: number): number => {
+      let lo = a; let hi = b
+      for (let it = 0; it < 40; it++) {
+        const m = 0.5 * (lo + hi)
+        if (this.accelAt(x, y, m) >= -G) lo = m; else hi = m
+      }
+      return 0.5 * (lo + hi)
+    }
+    let budget = budgetIn
+    // Left-first recursive resolution of one interval whose endpoint
+    // values are known (w(a) >= -G invariant). 'none' is returned
+    // only when every leaf is bound-proven; a bracketed root at
+    // width <= 1e-9 s is located by bisection (documented resolution
+    // floor: an earlier dip inside that window cannot be told apart).
+    const search = (a: number, b: number, wa: number, wb: number, depth: number): DetachSearchResult => {
+      if (wb < -G) {
+        if (depth <= 0 || b - a < 1e-9) return { kind: 'found', t: bisect(a, b) }
+        const m = 0.5 * (a + b)
+        const wm = this.accelAt(x, y, m)
+        const left = search(a, m, wa, wm, depth - 1)
+        if (left.kind === 'found') return left
+        if (left.kind === 'unknown') {
+          // A root in [a, b] is certain (sampled bracket); only its
+          // "firstness" inside the unresolved left part is in doubt.
+          // At this width that doubt is below 1e-9 s of model time.
+          if (b - a < 1e-8) return { kind: 'found', t: bisect(a, b) }
+          return left
+        }
+        return search(m, b, wm, wb, depth - 1)
+      }
+      if (budget-- <= 0) return { kind: 'unknown' }
+      if (this.wttLowerBound(x, y, a, b) >= -G) return { kind: 'none' }
+      if (depth <= 0 || b - a < 1e-12) return { kind: 'unknown' }
+      const m = 0.5 * (a + b)
+      const wm = this.accelAt(x, y, m)
+      const left = search(a, m, wa, wm, depth - 1)
+      if (left.kind !== 'none') return left
+      return search(m, b, wm, wb, depth - 1)
+    }
+    const wa0 = this.accelAt(x, y, ta)
+    if (wa0 < -G) return { kind: 'found', t: ta }
+    // Quick whole-interval proof (the common firmly-seated case).
+    const wb0 = this.accelAt(x, y, tb)
+    if (wb0 >= -G && budget-- > 0 && this.wttLowerBound(x, y, ta, tb) >= -G) {
+      return { kind: 'none' }
+    }
+    // Resolve scan subintervals strictly left-to-right.
+    const K = 8
+    let tp = ta; let wp = wa0
+    for (let k = 1; k <= K; k++) {
+      const t = k === K ? tb : ta + ((tb - ta) * k) / K
+      const w = k === K ? wb0 : this.accelAt(x, y, t)
+      const r = search(tp, t, wp, w, 40)
+      if (r.kind !== 'none') return r
+      tp = t; wp = w
+    }
+    return { kind: 'none' }
   }
 
   /** Pre-M6-4A surfAt, kept verbatim as the comparison reference. */
@@ -668,10 +1756,15 @@ export class TransientPlate {
   }
 
   /**
-   * Exact per-DOF ranges of the Hermite q and qdd over a future window,
-   * obtained by advancing a clone with the same dt sequence (dtAt) and the
-   * same RK4 substeps the real advance will use. qdd is linear per segment
-   * (endpoints suffice); q is cubic (endpoints + critical points).
+   * Exact per-DOF ranges of the Hermite q and implemented qdd over a
+   * future window, obtained by advancing a clone with the same dt
+   * sequence (dtAt) and the same RK4 substeps the real advance will
+   * use. Hermite qdd is linear per segment (endpoints suffice); q is
+   * cubic (endpoints + critical points). In 'ode' accel mode the
+   * qdd range is instead the interval evaluation of the ODE right
+   * hand side over the exact Hermite q/qd ranges and the segment's
+   * drive-force bound |F| <= max overlapping forcePeak (envelope and
+   * sine are both within [-1, 1]); widened by a rounding hair.
    * Valid only while real steps follow dtAt exactly (no shortened steps).
    */
   lookaheadRanges(fromT: number, windowS: number, dtAt: (t: number) => number) {
@@ -685,13 +1778,34 @@ export class TransientPlate {
       const dt = Math.min(dtAt(t), end - t)
       const [q1, qd1] = this.advanceState(q, qd, t, t + dt)
       const h = dt
+      let fpk = 0
+      // Match the implemented acceleration definition per segment
+      // (tiny segments use the ODE form even in 'hermite' mode).
+      const odeSeg = this.accelMode === 'ode' || h < 1e-7
+      if (odeSeg) {
+        const ts0 = t - this.epoch; const ts1 = t + dt - this.epoch
+        for (const e of this.signal.score.events) {
+          if (e.start_s <= ts1 && e.end_s >= ts0) fpk = Math.max(fpk, Math.abs(e.forcePeak_N))
+        }
+      }
       for (let j = 0; j < n; j++) {
         const r = hermiteQRange(q[j], qd[j], q1[j], qd1[j], h)
         if (r[0] < qMin[j]) qMin[j] = r[0]
         if (r[1] > qMax[j]) qMax[j] = r[1]
-        const a0 = (-6 * q[j] - 4 * h * qd[j] + 6 * q1[j] - 2 * h * qd1[j]) / (h * h)
-        const a1 = (6 * q[j] + 2 * h * qd[j] - 6 * q1[j] + 4 * h * qd1[j]) / (h * h)
-        const lo = Math.min(a0, a1); const hi = Math.max(a0, a1)
+        let lo: number; let hi: number
+        if (odeSeg) {
+          const rd = hermiteQdRange(q[j], qd[j], q1[j], qd1[j], h)
+          const w = this.omega[j]
+          const dAbs = Math.abs(this.phiDrive[j] / this.mass[j]) * fpk
+          lo = -dAbs - 2 * this.zeta * w * rd[1] - w * w * r[1]
+          hi = dAbs - 2 * this.zeta * w * rd[0] - w * w * r[0]
+          const wd = 1e-9 * (1 + Math.abs(lo) + Math.abs(hi))
+          lo -= wd; hi += wd
+        } else {
+          const a0 = (-6 * q[j] - 4 * h * qd[j] + 6 * q1[j] - 2 * h * qd1[j]) / (h * h)
+          const a1 = (6 * q[j] + 2 * h * qd[j] - 6 * q1[j] + 4 * h * qd1[j]) / (h * h)
+          lo = Math.min(a0, a1); hi = Math.max(a0, a1)
+        }
         if (lo < aMin[j]) aMin[j] = lo
         if (hi > aMax[j]) aMax[j] = hi
       }
@@ -729,6 +1843,24 @@ export function hermiteQRange(q0: number, qd0: number, q1: number, qd1: number, 
   for (const s of roots) {
     if (s > 0 && s < 1) {
       const v = qAt(s)
+      if (v < lo) lo = v
+      if (v > hi) hi = v
+    }
+  }
+  return [lo, hi]
+}
+
+/** Exact [min, max] of the Hermite velocity qd(s) = (A s^2 + B s + C)/h,
+ *  s in [0,1] (same A, B, C as hermiteQRange's qd numerator). */
+export function hermiteQdRange(q0: number, qd0: number, q1: number, qd1: number, h: number): [number, number] {
+  const A = 6 * (q0 - q1) + 3 * h * (qd0 + qd1)
+  const B = -6 * q0 + 6 * q1 + h * (-4 * qd0 - 2 * qd1)
+  const C = h * qd0
+  let lo = Math.min(qd0, qd1); let hi = Math.max(qd0, qd1)
+  if (Math.abs(A) > 0) {
+    const sv = -B / (2 * A)
+    if (sv > 0 && sv < 1) {
+      const v = (A * sv * sv + B * sv + C) / h
       if (v < lo) lo = v
       if (v > hi) hi = v
     }

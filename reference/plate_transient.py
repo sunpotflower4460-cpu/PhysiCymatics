@@ -134,6 +134,11 @@ class TransientPlate:
         self._mode_m = np.array([md["m"] for md in self.modes])
         self.set_drive(*drive_xy)
         self._seg = None  # (t0, t1, q0, qd0, qdd0, q1, qd1, qdd1)
+        # M6-11 research switch (mirrors TS TransientPlate.accelMode):
+        # "ode" evaluates qdd from the equation of motion applied to the
+        # Hermite q/qd instead of the Hermite second derivative.
+        # Default "hermite" is the production/reference model.
+        self.accel_mode = "hermite"
 
     def set_drive(self, x, y):
         self.drive_xy = (float(x), float(y))
@@ -185,6 +190,11 @@ class TransientPlate:
               + (-6*s2 + 6*s)*q1 + (3*s2 - 2*s)*h*qd1)/h
         qdd = ((12*s - 6)*q0 + (6*s - 4)*h*qd0
                + (-12*s + 6)*q1 + (6*s - 2)*h*qd1)/(h*h)
+        if self.accel_mode == "ode" or h < 1e-7:
+            # Tiny segments always use the ODE form: the Hermite qdd
+            # divides by h^2 and degenerates into cancellation garbage
+            # as h -> 0, while the ODE form is its stable limit.
+            qdd = self._accel(q, qd, tau)
         return q, qd, qdd
 
     def surf_at(self, x, y, tau):
@@ -241,7 +251,10 @@ class TransientPlate:
             if np.ndim(s) == 0:
                 q = c_q0*q0 + c_qd0*qd0 + c_q1*q1 + c_qd1*qd1
                 qd = d_q0*q0 + d_qd0*qd0 + d_q1*q1 + d_qd1*qd1
-                qdd = a_q0*q0 + a_qd0*qd0 + a_q1*q1 + a_qd1*qd1
+                if self.accel_mode == "ode" or hseg < 1e-7:
+                    qdd = self._accel(q, qd, float(tau))
+                else:
+                    qdd = a_q0*q0 + a_qd0*qd0 + a_q1*q1 + a_qd1*qd1
                 out[0][sl] = q @ Phi; out[1][sl] = q @ Phix; out[2][sl] = q @ Phiy
                 out[3][sl] = qd @ Phi; out[4][sl] = qdd @ Phi
             else:
@@ -254,7 +267,14 @@ class TransientPlate:
                 aq1 = (-12*ss + 6)/(hseg*hseg); aqd1 = (6*ss - 2)/hseg
                 q = cq0*q0[:, None] + cqd0*qd0[:, None] + cq1*q1[:, None] + cqd1*qd1[:, None]
                 qd = dq0*q0[:, None] + dqd0*qd0[:, None] + dq1*q1[:, None] + dqd1*qd1[:, None]
-                qdd = aq0*q0[:, None] + aqd0*qd0[:, None] + aq1*q1[:, None] + aqd1*qd1[:, None]
+                if self.accel_mode == "ode" or hseg < 1e-7:
+                    taus = t0 + ss*hseg
+                    Farr = np.array([self.score.force_peak_at(float(tt))*self.score.u(float(tt))
+                                     for tt in np.atleast_1d(taus)])
+                    qdd = (self.phi_drive[:, None]*Farr[None, :]/self.mass[:, None]
+                           - 2*self.zeta*self.omega[:, None]*qd - self.omega[:, None]**2*q)
+                else:
+                    qdd = aq0*q0[:, None] + aqd0*qd0[:, None] + aq1*q1[:, None] + aqd1*qd1[:, None]
                 out[0][sl] = np.einsum("jn,jn->n", q, Phi)
                 out[1][sl] = np.einsum("jn,jn->n", q, Phix)
                 out[2][sl] = np.einsum("jn,jn->n", q, Phiy)
@@ -265,6 +285,194 @@ class TransientPlate:
     def v_scale(self):
         q, qd = (self._seg[5], self._seg[6]) if self._seg else (self.q, self.qd)
         return float(np.sqrt(np.sum(qd**2 + (self.omega*q)**2)))
+
+    def _force_range(self, ta, tb):
+        """Conservative [min, max] of drive force over [ta, tb]: exact
+        per-event envelope x sine ranges (incl. the overlapping
+        attack/release peak), split at event boundaries. Mirrors TS
+        forceRange (score time == physics time here)."""
+        sig = self.score
+        cuts = [float(ta), float(tb)]
+        for e in sig.events:
+            for key in ("start_s", "end_s"):
+                if ta < e[key] < tb:
+                    cuts.append(float(e[key]))
+        cuts.sort()
+        lo, hi = np.inf, -np.inf
+        def env_at(ev, t):
+            env = 1.0
+            atk, rel = ev.get("attack_s", 0.0), ev.get("release_s", 0.0)
+            if atk > 0 and t < ev["start_s"] + atk:
+                u_ = (t - ev["start_s"])/atk; env = min(env, u_*u_*(3-2*u_))
+            if rel > 0 and t > ev["end_s"] - rel:
+                u_ = (ev["end_s"] - t)/rel; env = min(env, u_*u_*(3-2*u_))
+            return env
+        for a, b in zip(cuts[:-1], cuts[1:]):
+            i, ev = sig.event_at(a)
+            if ev is None:
+                i, ev = sig.event_at(0.5*(a + b))
+            if ev is None:
+                lo = min(lo, 0.0); hi = max(hi, 0.0); continue
+            elo = min(env_at(ev, a), env_at(ev, b))
+            ehi = max(env_at(ev, a), env_at(ev, b))
+            if a < ev["end_s"] - ev.get("release_s", 0.0) and b > ev["start_s"] + ev.get("attack_s", 0.0):
+                ehi = 1.0
+            atk, rel = ev.get("attack_s", 0.0), ev.get("release_s", 0.0)
+            if atk > 0 and rel > 0:
+                tc = (rel*ev["start_s"] + atk*ev["end_s"])/(atk + rel)
+                if a <= tc <= b:
+                    ehi = max(ehi, env_at(ev, tc))
+            elo = max(elo, 0.0); ehi = min(ehi, 1.0)
+            tha = sig._theta0[i] + 2*np.pi*ev["frequency_hz"]*(a - ev["start_s"])
+            thb = sig._theta0[i] + 2*np.pi*ev["frequency_hz"]*(b - ev["start_s"])
+            slo = min(np.sin(tha), np.sin(thb)); shi = max(np.sin(tha), np.sin(thb))
+            if thb - tha >= 2*np.pi:
+                slo, shi = -1.0, 1.0
+            else:
+                k0 = np.ceil((tha - np.pi/2)/(2*np.pi))
+                if np.pi/2 + 2*np.pi*k0 <= thb:
+                    shi = 1.0
+                k1 = np.ceil((tha - 3*np.pi/2)/(2*np.pi))
+                if 3*np.pi/2 + 2*np.pi*k1 <= thb:
+                    slo = -1.0
+            plo = elo*slo if slo >= 0 else ehi*slo
+            phi = ehi*shi if shi >= 0 else elo*shi
+            fpk = ev["forcePeak_N"]
+            plo, phi = (fpk*plo, fpk*phi) if fpk >= 0 else (fpk*phi, fpk*plo)
+            lo = min(lo, plo); hi = max(hi, phi)
+        for t in (float(ta), float(tb)):
+            f = sig.force_peak_at(t)*sig.u(t)
+            lo = min(lo, f); hi = max(hi, f)
+        return lo, hi
+
+    def wtt_lower_bound(self, x, y, ta, tb):
+        """Conservative lower bound of implemented wtt at fixed (x, y)
+        over [ta, tb] in the current segment (mirrors TS wttLowerBound).
+        """
+        if self._seg is None:
+            return -np.inf
+        t0, t1 = self._seg[0], self._seg[1]
+        if self.accel_mode != "ode" and (t1 - t0) >= 1e-7:
+            wa = float(self.surf_at(np.array([x]), np.array([y]), float(ta))[4][0])
+            wb = float(self.surf_at(np.array([x]), np.array([y]), float(tb))[4][0])
+            return min(wa, wb)
+        qa, qda, _ = self._hermite(float(ta))
+        qb, qdb, _ = self._hermite(float(tb))
+        h = float(tb) - float(ta)
+        A = 6*(qa - qb) + 3*h*(qda + qdb)
+        B = -6*qa + 6*qb + h*(-4*qda - 2*qdb)
+        C = h*qda
+        sqmin = np.minimum(qa, qb); sqmax = np.maximum(qa, qb)
+        disc = B*B - 4*A*C
+        with np.errstate(invalid="ignore", divide="ignore"):
+            sq = np.sqrt(np.maximum(disc, 0.0))
+            for s_ in ((-B - sq)/np.where(A != 0, 2*A, 1.0), (-B + sq)/np.where(A != 0, 2*A, 1.0)):
+                valid = (A != 0) & (disc >= 0) & (s_ > 0) & (s_ < 1)
+                s2, s3 = s_*s_, s_*s_*s_
+                qv = ((2*s3 - 3*s2 + 1)*qa + (s3 - 2*s2 + s_)*h*qda
+                      + (-2*s3 + 3*s2)*qb + (s3 - s2)*h*qdb)
+                sqmin = np.where(valid, np.minimum(sqmin, qv), sqmin)
+                sqmax = np.where(valid, np.maximum(sqmax, qv), sqmax)
+            # Degenerate quadratic (A == 0): the qd numerator is linear
+            # and its root s = -C/B is a q extremum (M6-14R review;
+            # mirrors TS hermiteQRange). Missing it would underestimate
+            # the q range and could overstate the acceleration bound.
+            sl = -C/np.where(B != 0, B, 1.0)
+            valid = (A == 0) & (B != 0) & (sl > 0) & (sl < 1)
+            s2, s3 = sl*sl, sl*sl*sl
+            qv = ((2*s3 - 3*s2 + 1)*qa + (s3 - 2*s2 + sl)*h*qda
+                  + (-2*s3 + 3*s2)*qb + (s3 - s2)*h*qdb)
+            sqmin = np.where(valid, np.minimum(sqmin, qv), sqmin)
+            sqmax = np.where(valid, np.maximum(sqmax, qv), sqmax)
+            qdmin = np.minimum(qda, qdb); qdmax = np.maximum(qda, qdb)
+            sv = -B/np.where(A != 0, 2*A, 1.0)
+            valid = (A != 0) & (sv > 0) & (sv < 1)
+            vv = (A*sv*sv + B*sv + C)/h
+            qdmin = np.where(valid, np.minimum(qdmin, vv), qdmin)
+            qdmax = np.where(valid, np.maximum(qdmax, vv), qdmax)
+        flo, fhi = self._force_range(float(ta), float(tb))
+        c = self.phi_drive/self.mass
+        dlo = np.minimum(c*flo, c*fhi); dhi = np.maximum(c*flo, c*fhi)
+        w = self.omega
+        lo = dlo - 2*self.zeta*w*qdmax - w*w*sqmax
+        hi = dhi - 2*self.zeta*w*qdmin - w*w*sqmin
+        wd = 1e-12*(1.0 + np.abs(lo) + np.abs(hi))
+        lo -= wd; hi += wd
+        phis = np.array([float(_phi_grad(self.modes[d["mode"]], d["kind"],
+                                          np.array([x]), np.array([y]))[0][0])
+                         for d in self.dofs])
+        return float(np.minimum(phis*lo, phis*hi).sum())
+
+    def ode_form_active(self):
+        """True when the current segment's acceleration uses the ODE
+        form: explicit 'ode' mode or the tiny-segment (h < 1e-7)
+        stable fallback. Linear-root detach logic must not run then."""
+        return self.accel_mode == "ode" or (
+            self._seg is not None and (self._seg[1] - self._seg[0]) < 1e-7)
+
+    def first_detach_below(self, x, y, ta, tb, budget_in=2048):
+        """First t in [ta, tb] with implemented wtt < -G at fixed (x, y).
+
+        Tri-state return (status, t): ("found", t) first crossing in
+        time order; ("none", None) absence proven by interval bounds;
+        ("unknown", None) budget exhausted — absence NOT proven and
+        must never be treated as "none" (mirrors TS firstDetachBelow,
+        M6-12R). Scan subintervals resolve strictly left-to-right."""
+        if self._seg is None:
+            return ("unknown", None)
+        wfun = lambda t: float(self.surf_at(np.array([x]), np.array([y]), float(t))[4][0])
+        def bisect(a, b):
+            lo, hi = a, b
+            for _ in range(40):
+                m = 0.5*(lo + hi)
+                if wfun(m) >= -G:
+                    lo = m
+                else:
+                    hi = m
+            return 0.5*(lo + hi)
+        budget = [budget_in]
+        def search(a, b, wa, wb, depth):
+            if wb < -G:
+                if depth <= 0 or b - a < 1e-9:
+                    return ("found", bisect(a, b))
+                m = 0.5*(a + b); wm = wfun(m)
+                left = search(a, m, wa, wm, depth - 1)
+                if left[0] == "found":
+                    return left
+                if left[0] == "unknown":
+                    if b - a < 1e-8:
+                        return ("found", bisect(a, b))
+                    return left
+                return search(m, b, wm, wb, depth - 1)
+            if budget[0] <= 0:
+                return ("unknown", None)
+            budget[0] -= 1
+            if self.wtt_lower_bound(x, y, a, b) >= -G:
+                return ("none", None)
+            if depth <= 0 or b - a < 1e-12:
+                return ("unknown", None)
+            m = 0.5*(a + b); wm = wfun(m)
+            left = search(a, m, wa, wm, depth - 1)
+            if left[0] != "none":
+                return left
+            return search(m, b, wm, wb, depth - 1)
+        wa0 = wfun(ta)
+        if wa0 < -G:
+            return ("found", float(ta))
+        wb0 = wfun(tb)
+        if wb0 >= -G and budget[0] > 0:
+            budget[0] -= 1
+            if self.wtt_lower_bound(x, y, float(ta), float(tb)) >= -G:
+                return ("none", None)
+        tp = float(ta); wp = wa0
+        for k in range(1, 9):
+            t = float(tb) if k == 8 else ta + (tb - ta)*(k/8.0)
+            w = wb0 if k == 8 else wfun(t)
+            r = search(tp, float(t), wp, w, 40)
+            if r[0] != "none":
+                return r
+            tp = float(t); wp = w
+        return ("none", None)
 
     def lookahead_ranges(self, from_t, window, dt_at):
         """Exact per-DOF Hermite q/qdd ranges over a future window, from a
@@ -285,8 +493,7 @@ class TransientPlate:
                 q1, qd1 = self._rk4(q1, qd1, tt, hsub); tt += hsub
             h = dt
             # q range: endpoints + critical points of the cubic.
-            qmin = np.minimum(qmin, np.minimum(q, q1))
-            qmax = np.maximum(qmax, np.maximum(q, q1))
+            sqmin = np.minimum(q, q1); sqmax = np.maximum(q, q1)
             A = 6*(q - q1) + 3*h*(qd + qd1)
             B = -6*q + 6*q1 + h*(-4*qd - 2*qd1)
             C = h*qd
@@ -298,12 +505,43 @@ class TransientPlate:
                     s2, s3 = s*s, s*s*s
                     qv = ((2*s3 - 3*s2 + 1)*q + (s3 - 2*s2 + s)*h*qd
                           + (-2*s3 + 3*s2)*q1 + (s3 - s2)*h*qd1)
-                    qmin = np.where(valid, np.minimum(qmin, qv), qmin)
-                    qmax = np.where(valid, np.maximum(qmax, qv), qmax)
-            a0 = (-6*q - 4*h*qd + 6*q1 - 2*h*qd1)/(h*h)
-            a1 = (6*q + 2*h*qd - 6*q1 + 4*h*qd1)/(h*h)
-            amin = np.minimum(amin, np.minimum(a0, a1))
-            amax = np.maximum(amax, np.maximum(a0, a1))
+                    sqmin = np.where(valid, np.minimum(sqmin, qv), sqmin)
+                    sqmax = np.where(valid, np.maximum(sqmax, qv), sqmax)
+                # A == 0 degenerate root s = -C/B (see wtt bound above).
+                sl = -C/np.where(B != 0, B, 1.0)
+                valid = (A == 0) & (B != 0) & (sl > 0) & (sl < 1)
+                s2, s3 = sl*sl, sl*sl*sl
+                qv = ((2*s3 - 3*s2 + 1)*q + (s3 - 2*s2 + sl)*h*qd
+                      + (-2*s3 + 3*s2)*q1 + (s3 - s2)*h*qd1)
+                sqmin = np.where(valid, np.minimum(sqmin, qv), sqmin)
+                sqmax = np.where(valid, np.maximum(sqmax, qv), sqmax)
+            qmin = np.minimum(qmin, sqmin); qmax = np.maximum(qmax, sqmax)
+            if self.accel_mode == "ode" or h < 1e-7:
+                # Interval evaluation of the ODE right hand side over the
+                # exact Hermite q/qd ranges (mirrors TS lookaheadRanges).
+                qdmin = np.minimum(qd, qd1); qdmax = np.maximum(qd, qd1)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    sv = -B/np.where(A != 0, 2*A, 1.0)
+                    valid = (A != 0) & (sv > 0) & (sv < 1)
+                    vv = (A*sv*sv + B*sv + C)/h
+                    qdmin = np.where(valid, np.minimum(qdmin, vv), qdmin)
+                    qdmax = np.where(valid, np.maximum(qdmax, vv), qdmax)
+                fpk = 0.0
+                for e in self.score.events:
+                    if e["start_s"] <= t + dt and e["end_s"] >= t:
+                        fpk = max(fpk, abs(e["forcePeak_N"]))
+                d_abs = np.abs(self.phi_drive/self.mass)*fpk
+                w = self.omega
+                lo = -d_abs - 2*self.zeta*w*qdmax - w*w*sqmax
+                hi = d_abs - 2*self.zeta*w*qdmin - w*w*sqmin
+                wd = 1e-9*(1.0 + np.abs(lo) + np.abs(hi))
+                amin = np.minimum(amin, lo - wd)
+                amax = np.maximum(amax, hi + wd)
+            else:
+                a0 = (-6*q - 4*h*qd + 6*q1 - 2*h*qd1)/(h*h)
+                a1 = (6*q + 2*h*qd - 6*q1 + 4*h*qd1)/(h*h)
+                amin = np.minimum(amin, np.minimum(a0, a1))
+                amax = np.maximum(amax, np.maximum(a0, a1))
             q, qd, t = q1, qd1, t + dt
         return dict(end=end, qmin=qmin, qmax=qmax, amin=amin, amax=amax)
 
@@ -576,6 +814,40 @@ class TransientSandSim:
                     di = si[det]; sitting[di] = False
                     vz[di] = uz[det]; z[di] = hs[det] + 1e-9
                     cur[si] = t_new
+                elif pl.ode_form_active():
+                    # M6-11 research: ODE wtt is not linear in time, so the
+                    # exact root below does not apply. Interval-assisted
+                    # per-particle search on the plate (mirrors TS
+                    # detachTimeOde -> firstDetachBelow).
+                    hs1,_,_,_, _w1 = pl.surf_at(x[si], y[si], np.full(si.size, t_new))
+                    td = np.full(si.size, np.nan)
+                    for li, gi in enumerate(si):
+                        status, r = pl.first_detach_below(float(x[gi]), float(y[gi]),
+                                                          float(cur[gi]), t_new)
+                        if status == "unknown":
+                            status, r = pl.first_detach_below(float(x[gi]), float(y[gi]),
+                                                              float(cur[gi]), t_new,
+                                                              budget_in=16384)
+                        if status == "unknown":
+                            raise RuntimeError(
+                                f"detach search inconclusive for particle {gi} "
+                                f"on [{float(cur[gi])}, {t_new}] (ODE accel mode): "
+                                "absence of a detach root could not be proven")
+                        if status == "found":
+                            td[li] = r
+                    stay = np.isnan(td)
+                    if stay.any():
+                        sj = si[stay]; z[sj] = hs1[stay]; cur[sj] = t_new
+                    det = ~stay
+                    if det.any():
+                        dj = si[det]
+                        hd,_,_, uzd, _ = pl.surf_at(x[dj], y[dj], td[det])
+                        sitting[dj] = False
+                        z[dj] = hd + 1e-9; vz[dj] = uzd
+                        cur[dj] = td[det]
+                        self.n_detach += int(dj.size)
+                        if dj.size:
+                            self.last_detach_t = float(td[det][0])
                 else:
                     _,_,_,_, w0 = pl.surf_at(x[si], y[si], cur[si])
                     hs1,_,_,_, w1 = pl.surf_at(x[si], y[si], np.full(si.size, t_new))
@@ -772,7 +1044,27 @@ class TransientSandSim:
         self.t = t_new
 
     def advance_to(self, t_target):
-        """Advance to EXACTLY t_target (final step shortened; never overshoots)."""
-        while self.t < t_target - 1e-15:
-            self.step(min(self.dt_now(), t_target - self.t))
+        """Advance to EXACTLY t_target (final step shortened; never overshoots).
+
+        A floating-point accumulation remnant must not become a plate
+        segment: for h ~ 1e-15 s the Hermite acceleration (division by
+        h^2) is cancellation garbage and spuriously detaches seated
+        grains (M6-11R finding, mirrors TS advanceTo). Remnants below
+        the threshold are snapped without stepping.
+        """
+        while True:
+            rem = t_target - self.t
+            if rem <= max(1e-12, self.dt_now() * 1e-9):
+                break
+            self.step(min(self.dt_now(), rem))
+        if self.t < t_target:
+            # Snap BOTH clocks: the invariant at every step boundary is
+            # plate.t == sim.t with the modal state taken as the state
+            # at that time. The skipped evolution is <= the remnant
+            # (<= ~1e-12 s, the FP accumulation that created it), and
+            # canonical step()-driven runs never take this branch.
+            # Advancing only self.t desynchronizes the clocks and the
+            # next begin_step assertion fails (M6-13R review).
+            self.t = t_target
+            self.plate.t = t_target
         self.materialize_all()

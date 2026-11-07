@@ -1,0 +1,3295 @@
+{
+ "schema": "physicymatics.m629.measurements.v1",
+ "branch": "m6-29-residence-escape",
+ "baseCommit": "db5cd4d (PR #32 head)",
+ "params": {
+  "freqHz": 152,
+  "plateHalfThicknessM": 0.0005,
+  "baseDt": 0.00014952153110047846,
+  "sampleCadence": "every plate step",
+  "zonePrimary": "lowest-decile |wtt| cells, 5mm band; antinode activity >= q90 and >10mm from nodal cells",
+  "orientations": "same deterministic grid as M6-27B/28"
+ },
+ "runs": [
+  {
+   "study": "m629-residence",
+   "case": "eccentric-aspect1",
+   "drive": "eccentric",
+   "aspect": 1,
+   "dt": 0.00014952153110047846,
+   "wallMs": 55711,
+   "fieldThresholds": {
+    "repro": {
+     "f0.05": 5.8770177352718544,
+     "f0.1": 10.481095847647595,
+     "f0.2": 22.414640236459594
+    },
+    "warm": {
+     "f0.05": 8.851017180541422,
+     "f0.1": 15.867938975363284,
+     "f0.2": 34.03540931524242
+    },
+    "q90Repro": 98.82768465114366,
+    "q90Warm": 150.2526426971442
+   },
+   "primaryAreas": {
+    "repro": [
+     0.1542761319172722,
+     0.7451089994410285,
+     0.10061486864169927
+    ],
+    "warm": [
+     0.1542761319172722,
+     0.7451089994410285,
+     0.10061486864169927
+    ]
+   },
+   "primary": {
+    "reproduction": {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "primary-f10-band5mm",
+     "totalLiveExposureS": 31.5,
+     "initialPopulationExposureS": 31.5,
+     "lostGrainsInWindow": 0,
+     "transitionsToNodeInterAntiLostCensored": [
+      [
+       0,
+       3,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       15
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       6
+      ]
+     ],
+     "zones": [
+      {
+       "zone": "node",
+       "areaFractionNull": 0.1543,
+       "exposureS": 3.242,
+       "occupancyLive": 0.1029,
+       "occupancyInitialPop": 0.1029,
+       "occupancyEnrichmentVsArea": 0.667,
+       "contactTimeS": 1.358,
+       "flightTimeS": 1.883,
+       "contactFraction": 0.419,
+       "episodes": 3,
+       "entries": 0,
+       "exits": 3,
+       "entryRatePerOutsideS": 0,
+       "escapeRatePerS": 0.925,
+       "leftCensoredEpisodes": 3,
+       "rightCensoredEpisodes": 0,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 1.1012,
+       "medianAllObservedDurationS": 1.1012,
+       "exitSurvivalGt0p1": 1,
+       "exitSurvivalGt0p5": 1,
+       "exitSurvivalGt1p0": 0.667,
+       "medianEpisodeContactFraction": 0.4158,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 3,
+       "impacts": 564,
+       "detaches": 165,
+       "contactImpulses": 34638,
+       "impactsPerExposureS": 173.97,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 3,
+        "exitEpisodes": 3,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 1.1012
+       }
+      },
+      {
+       "zone": "intermediate",
+       "areaFractionNull": 0.7451,
+       "exposureS": 19.258,
+       "occupancyLive": 0.6114,
+       "occupancyInitialPop": 0.6114,
+       "occupancyEnrichmentVsArea": 0.821,
+       "contactTimeS": 0.923,
+       "flightTimeS": 18.335,
+       "contactFraction": 0.0479,
+       "episodes": 15,
+       "entries": 3,
+       "exits": 0,
+       "entryRatePerOutsideS": 0.245,
+       "escapeRatePerS": 0,
+       "leftCensoredEpisodes": 12,
+       "rightCensoredEpisodes": 15,
+       "lostEpisodes": 0,
+       "medianExitDurationS": null,
+       "medianAllObservedDurationS": 1.5,
+       "exitSurvivalGt0p1": null,
+       "exitSurvivalGt0p5": null,
+       "exitSurvivalGt1p0": null,
+       "medianEpisodeContactFraction": 0.0401,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 0,
+       "impacts": 1789,
+       "detaches": 307,
+       "contactImpulses": 22436,
+       "impactsPerExposureS": 92.9,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 15,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": null
+       }
+      },
+      {
+       "zone": "antinode",
+       "areaFractionNull": 0.1006,
+       "exposureS": 9,
+       "occupancyLive": 0.2857,
+       "occupancyInitialPop": 0.2857,
+       "occupancyEnrichmentVsArea": 2.84,
+       "contactTimeS": 0.093,
+       "flightTimeS": 8.907,
+       "contactFraction": 0.0103,
+       "episodes": 6,
+       "entries": 0,
+       "exits": 0,
+       "entryRatePerOutsideS": 0,
+       "escapeRatePerS": 0,
+       "leftCensoredEpisodes": 6,
+       "rightCensoredEpisodes": 6,
+       "lostEpisodes": 0,
+       "medianExitDurationS": null,
+       "medianAllObservedDurationS": 1.5,
+       "exitSurvivalGt0p1": null,
+       "exitSurvivalGt0p5": null,
+       "exitSurvivalGt1p0": null,
+       "medianEpisodeContactFraction": 0.0114,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 0,
+       "impacts": 436,
+       "detaches": 47,
+       "contactImpulses": 2142,
+       "impactsPerExposureS": 48.44,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 6,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": null
+       }
+      }
+     ]
+    },
+    "warmup": {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "primary-f10-band5mm",
+     "totalLiveExposureS": 29.291,
+     "initialPopulationExposureS": 31.5,
+     "lostGrainsInWindow": 5,
+     "transitionsToNodeInterAntiLostCensored": [
+      [
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       5,
+       5,
+       4
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       12
+      ]
+     ],
+     "zones": [
+      {
+       "zone": "node",
+       "areaFractionNull": 0.1543,
+       "exposureS": 0,
+       "occupancyLive": 0,
+       "occupancyInitialPop": 0,
+       "occupancyEnrichmentVsArea": 0,
+       "contactTimeS": 0,
+       "flightTimeS": 0,
+       "contactFraction": null,
+       "episodes": 0,
+       "entries": 0,
+       "exits": 0,
+       "entryRatePerOutsideS": 0,
+       "escapeRatePerS": null,
+       "leftCensoredEpisodes": 0,
+       "rightCensoredEpisodes": 0,
+       "lostEpisodes": 0,
+       "medianExitDurationS": null,
+       "medianAllObservedDurationS": null,
+       "exitSurvivalGt0p1": null,
+       "exitSurvivalGt0p5": null,
+       "exitSurvivalGt1p0": null,
+       "medianEpisodeContactFraction": null,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 0,
+       "impacts": 0,
+       "detaches": 0,
+       "contactImpulses": 0,
+       "impactsPerExposureS": null,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": null,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": null,
+        "medianExitDurationS": null
+       }
+      },
+      {
+       "zone": "intermediate",
+       "areaFractionNull": 0.7451,
+       "exposureS": 16.184,
+       "occupancyLive": 0.5525,
+       "occupancyInitialPop": 0.5138,
+       "occupancyEnrichmentVsArea": 0.742,
+       "contactTimeS": 0.089,
+       "flightTimeS": 16.094,
+       "contactFraction": 0.0055,
+       "episodes": 14,
+       "entries": 0,
+       "exits": 5,
+       "entryRatePerOutsideS": 0,
+       "escapeRatePerS": 0.309,
+       "leftCensoredEpisodes": 14,
+       "rightCensoredEpisodes": 4,
+       "lostEpisodes": 5,
+       "medianExitDurationS": 1.0057,
+       "medianAllObservedDurationS": 1.2989,
+       "exitSurvivalGt0p1": 1,
+       "exitSurvivalGt0p5": 0.8,
+       "exitSurvivalGt1p0": 0.6,
+       "medianEpisodeContactFraction": 0.0048,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 5,
+       "impacts": 619,
+       "detaches": 62,
+       "contactImpulses": 2208,
+       "impactsPerExposureS": 38.25,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 14,
+        "exitEpisodes": 5,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 1.0057
+       }
+      },
+      {
+       "zone": "antinode",
+       "areaFractionNull": 0.1006,
+       "exposureS": 13.108,
+       "occupancyLive": 0.4475,
+       "occupancyInitialPop": 0.4161,
+       "occupancyEnrichmentVsArea": 4.448,
+       "contactTimeS": 0.029,
+       "flightTimeS": 13.078,
+       "contactFraction": 0.0022,
+       "episodes": 12,
+       "entries": 5,
+       "exits": 0,
+       "entryRatePerOutsideS": 0.309,
+       "escapeRatePerS": 0,
+       "leftCensoredEpisodes": 7,
+       "rightCensoredEpisodes": 12,
+       "lostEpisodes": 0,
+       "medianExitDurationS": null,
+       "medianAllObservedDurationS": 1.5,
+       "exitSurvivalGt0p1": null,
+       "exitSurvivalGt0p5": null,
+       "exitSurvivalGt1p0": null,
+       "medianEpisodeContactFraction": 0.0018,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 0,
+       "impacts": 321,
+       "detaches": 24,
+       "contactImpulses": 715,
+       "impactsPerExposureS": 24.49,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 12,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": null
+       }
+      }
+     ]
+    }
+   },
+   "sensitivity": [
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "primary-f10-band5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.1029,
+      "enrichment": 0.667,
+      "entryRate": 0,
+      "escapeRate": 0.925,
+      "medianExitDurationS": 1.1012,
+      "contactFraction": 0.419,
+      "episodes": 3,
+      "exits": 3
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2857,
+      "enrichment": 2.84,
+      "entryRate": 0,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0103,
+      "episodes": 6,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "band2p5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.0486,
+      "enrichment": 0.483,
+      "entryRate": 0,
+      "escapeRate": 1.306,
+      "medianExitDurationS": 0.8304,
+      "contactFraction": 0.5715,
+      "episodes": 2,
+      "exits": 2
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2857,
+      "enrichment": 2.84,
+      "entryRate": 0,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0103,
+      "episodes": 6,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "band10mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.185,
+      "enrichment": 0.678,
+      "entryRate": 0,
+      "escapeRate": 0.515,
+      "medianExitDurationS": 0.5842,
+      "contactFraction": 0.2823,
+      "episodes": 6,
+      "exits": 3
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2857,
+      "enrichment": 2.84,
+      "entryRate": 0,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0103,
+      "episodes": 6,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "nodal-set5pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.0432,
+      "enrichment": 0.394,
+      "entryRate": 0.066,
+      "escapeRate": 2.938,
+      "medianExitDurationS": 0.5327,
+      "contactFraction": 0.6915,
+      "episodes": 4,
+      "exits": 4
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2857,
+      "enrichment": 2.84,
+      "entryRate": 0,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0103,
+      "episodes": 6,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "nodal-set20pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.1765,
+      "enrichment": 0.702,
+      "entryRate": 0,
+      "escapeRate": 0.899,
+      "medianExitDurationS": 0.7053,
+      "contactFraction": 0.295,
+      "episodes": 6,
+      "exits": 5
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2857,
+      "enrichment": 2.84,
+      "entryRate": 0,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0103,
+      "episodes": 6,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "primary-f10-band5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0,
+      "enrichment": 0,
+      "entryRate": 0,
+      "escapeRate": null,
+      "medianExitDurationS": null,
+      "contactFraction": null,
+      "episodes": 0,
+      "exits": 0
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.4475,
+      "enrichment": 4.448,
+      "entryRate": 0.309,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0022,
+      "episodes": 12,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "band2p5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0,
+      "enrichment": 0,
+      "entryRate": 0,
+      "escapeRate": null,
+      "medianExitDurationS": null,
+      "contactFraction": null,
+      "episodes": 0,
+      "exits": 0
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.4475,
+      "enrichment": 4.448,
+      "entryRate": 0.309,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0022,
+      "episodes": 12,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "band10mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.0032,
+      "enrichment": 0.012,
+      "entryRate": 0,
+      "escapeRate": 10.805,
+      "medianExitDurationS": 0.0926,
+      "contactFraction": 0,
+      "episodes": 1,
+      "exits": 1
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.4475,
+      "enrichment": 4.448,
+      "entryRate": 0.309,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0022,
+      "episodes": 12,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "nodal-set5pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0,
+      "enrichment": 0,
+      "entryRate": 0,
+      "escapeRate": null,
+      "medianExitDurationS": null,
+      "contactFraction": null,
+      "episodes": 0,
+      "exits": 0
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.4475,
+      "enrichment": 4.448,
+      "entryRate": 0.309,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0022,
+      "episodes": 12,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "nodal-set20pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.0032,
+      "enrichment": 0.013,
+      "entryRate": 0,
+      "escapeRate": 10.805,
+      "medianExitDurationS": 0.0926,
+      "contactFraction": 0,
+      "episodes": 1,
+      "exits": 1
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.4475,
+      "enrichment": 4.448,
+      "entryRate": 0.309,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0022,
+      "episodes": 12,
+      "exits": 0
+     }
+    }
+   ]
+  },
+  {
+   "study": "m629-residence",
+   "case": "eccentric-aspect1p5",
+   "drive": "eccentric",
+   "aspect": 1.5,
+   "dt": 0.00014952153110047846,
+   "wallMs": 56441,
+   "fieldThresholds": {
+    "repro": {
+     "f0.05": 5.8770177352718544,
+     "f0.1": 10.481095847647595,
+     "f0.2": 22.414640236459594
+    },
+    "warm": {
+     "f0.05": 8.851017180541422,
+     "f0.1": 15.867938975363284,
+     "f0.2": 34.03540931524242
+    },
+    "q90Repro": 98.82768465114366,
+    "q90Warm": 150.2526426971442
+   },
+   "primaryAreas": {
+    "repro": [
+     0.1542761319172722,
+     0.7451089994410285,
+     0.10061486864169927
+    ],
+    "warm": [
+     0.1542761319172722,
+     0.7451089994410285,
+     0.10061486864169927
+    ]
+   },
+   "primary": {
+    "reproduction": {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "primary-f10-band5mm",
+     "totalLiveExposureS": 30.669,
+     "initialPopulationExposureS": 31.5,
+     "lostGrainsInWindow": 1,
+     "transitionsToNodeInterAntiLostCensored": [
+      [
+       0,
+       3,
+       0,
+       0,
+       8
+      ],
+      [
+       8,
+       0,
+       5,
+       1,
+       11
+      ],
+      [
+       0,
+       10,
+       0,
+       0,
+       1
+      ]
+     ],
+     "zones": [
+      {
+       "zone": "node",
+       "areaFractionNull": 0.1543,
+       "exposureS": 6.596,
+       "occupancyLive": 0.2151,
+       "occupancyInitialPop": 0.2094,
+       "occupancyEnrichmentVsArea": 1.394,
+       "contactTimeS": 3.331,
+       "flightTimeS": 3.266,
+       "contactFraction": 0.5049,
+       "episodes": 11,
+       "entries": 8,
+       "exits": 3,
+       "entryRatePerOutsideS": 0.332,
+       "escapeRatePerS": 0.455,
+       "leftCensoredEpisodes": 3,
+       "rightCensoredEpisodes": 8,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.9725,
+       "medianAllObservedDurationS": 0.6138,
+       "exitSurvivalGt0p1": 1,
+       "exitSurvivalGt0p5": 1,
+       "exitSurvivalGt1p0": 0.333,
+       "medianEpisodeContactFraction": 0.4676,
+       "exitsFromContactInterval": 1,
+       "exitsFromFlightInterval": 2,
+       "impacts": 1496,
+       "detaches": 469,
+       "contactImpulses": 527065,
+       "impactsPerExposureS": 226.79,
+       "contactDominant": {
+        "episodes": 5,
+        "exitEpisodes": 2,
+        "durationShareOfZone": 0.5257,
+        "medianExitDurationS": 0.9725
+       },
+       "flightDominant": {
+        "episodes": 6,
+        "exitEpisodes": 1,
+        "durationShareOfZone": 0.4743,
+        "medianExitDurationS": 1.003
+       }
+      },
+      {
+       "zone": "intermediate",
+       "areaFractionNull": 0.7451,
+       "exposureS": 19.035,
+       "occupancyLive": 0.6207,
+       "occupancyInitialPop": 0.6043,
+       "occupancyEnrichmentVsArea": 0.833,
+       "contactTimeS": 1.325,
+       "flightTimeS": 17.71,
+       "contactFraction": 0.0696,
+       "episodes": 25,
+       "entries": 13,
+       "exits": 13,
+       "entryRatePerOutsideS": 1.117,
+       "escapeRatePerS": 0.683,
+       "leftCensoredEpisodes": 12,
+       "rightCensoredEpisodes": 11,
+       "lostEpisodes": 1,
+       "medianExitDurationS": 0.3713,
+       "medianAllObservedDurationS": 0.5664,
+       "exitSurvivalGt0p1": 1,
+       "exitSurvivalGt0p5": 0.385,
+       "exitSurvivalGt1p0": 0.077,
+       "medianEpisodeContactFraction": 0.0434,
+       "exitsFromContactInterval": 1,
+       "exitsFromFlightInterval": 12,
+       "impacts": 2229,
+       "detaches": 509,
+       "contactImpulses": 208416,
+       "impactsPerExposureS": 117.1,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 25,
+        "exitEpisodes": 13,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.3713
+       }
+      },
+      {
+       "zone": "antinode",
+       "areaFractionNull": 0.1006,
+       "exposureS": 5.037,
+       "occupancyLive": 0.1642,
+       "occupancyInitialPop": 0.1599,
+       "occupancyEnrichmentVsArea": 1.632,
+       "contactTimeS": 0.218,
+       "flightTimeS": 4.819,
+       "contactFraction": 0.0432,
+       "episodes": 11,
+       "entries": 5,
+       "exits": 10,
+       "entryRatePerOutsideS": 0.195,
+       "escapeRatePerS": 1.985,
+       "leftCensoredEpisodes": 6,
+       "rightCensoredEpisodes": 1,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.5879,
+       "medianAllObservedDurationS": 0.5351,
+       "exitSurvivalGt0p1": 0.7,
+       "exitSurvivalGt0p5": 0.6,
+       "exitSurvivalGt1p0": 0.2,
+       "medianEpisodeContactFraction": 0.0289,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 10,
+       "impacts": 399,
+       "detaches": 75,
+       "contactImpulses": 30999,
+       "impactsPerExposureS": 79.21,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 11,
+        "exitEpisodes": 10,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.5879
+       }
+      }
+     ]
+    },
+    "warmup": {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "primary-f10-band5mm",
+     "totalLiveExposureS": 28.464,
+     "initialPopulationExposureS": 31.5,
+     "lostGrainsInWindow": 2,
+     "transitionsToNodeInterAntiLostCensored": [
+      [
+       0,
+       8,
+       0,
+       0,
+       12
+      ],
+      [
+       9,
+       0,
+       3,
+       2,
+       6
+      ],
+      [
+       0,
+       4,
+       0,
+       0,
+       0
+      ]
+     ],
+     "zones": [
+      {
+       "zone": "node",
+       "areaFractionNull": 0.1543,
+       "exposureS": 18.6,
+       "occupancyLive": 0.6535,
+       "occupancyInitialPop": 0.5905,
+       "occupancyEnrichmentVsArea": 4.236,
+       "contactTimeS": 8.363,
+       "flightTimeS": 10.237,
+       "contactFraction": 0.4496,
+       "episodes": 20,
+       "entries": 9,
+       "exits": 8,
+       "entryRatePerOutsideS": 0.912,
+       "escapeRatePerS": 0.43,
+       "leftCensoredEpisodes": 11,
+       "rightCensoredEpisodes": 12,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.1118,
+       "medianAllObservedDurationS": 1.494,
+       "exitSurvivalGt0p1": 0.5,
+       "exitSurvivalGt0p5": 0.25,
+       "exitSurvivalGt1p0": 0.125,
+       "medianEpisodeContactFraction": 0.2227,
+       "exitsFromContactInterval": 1,
+       "exitsFromFlightInterval": 7,
+       "impacts": 4864,
+       "detaches": 1738,
+       "contactImpulses": 1216311,
+       "impactsPerExposureS": 261.5,
+       "contactDominant": {
+        "episodes": 4,
+        "exitEpisodes": 1,
+        "durationShareOfZone": 0.3223,
+        "medianExitDurationS": 1.494
+       },
+       "flightDominant": {
+        "episodes": 16,
+        "exitEpisodes": 7,
+        "durationShareOfZone": 0.6777,
+        "medianExitDurationS": 0.0253
+       }
+      },
+      {
+       "zone": "intermediate",
+       "areaFractionNull": 0.7451,
+       "exposureS": 8.963,
+       "occupancyLive": 0.3149,
+       "occupancyInitialPop": 0.2845,
+       "occupancyEnrichmentVsArea": 0.423,
+       "contactTimeS": 0.15,
+       "flightTimeS": 8.813,
+       "contactFraction": 0.0167,
+       "episodes": 20,
+       "entries": 12,
+       "exits": 12,
+       "entryRatePerOutsideS": 0.615,
+       "escapeRatePerS": 1.339,
+       "leftCensoredEpisodes": 8,
+       "rightCensoredEpisodes": 6,
+       "lostEpisodes": 2,
+       "medianExitDurationS": 0.3182,
+       "medianAllObservedDurationS": 0.3435,
+       "exitSurvivalGt0p1": 0.75,
+       "exitSurvivalGt0p5": 0.083,
+       "exitSurvivalGt1p0": 0,
+       "medianEpisodeContactFraction": 0.0128,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 12,
+       "impacts": 637,
+       "detaches": 111,
+       "contactImpulses": 21362,
+       "impactsPerExposureS": 71.07,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 20,
+        "exitEpisodes": 12,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.3182
+       }
+      },
+      {
+       "zone": "antinode",
+       "areaFractionNull": 0.1006,
+       "exposureS": 0.901,
+       "occupancyLive": 0.0317,
+       "occupancyInitialPop": 0.0286,
+       "occupancyEnrichmentVsArea": 0.315,
+       "contactTimeS": 0.003,
+       "flightTimeS": 0.899,
+       "contactFraction": 0.0031,
+       "episodes": 4,
+       "entries": 3,
+       "exits": 4,
+       "entryRatePerOutsideS": 0.109,
+       "escapeRatePerS": 4.438,
+       "leftCensoredEpisodes": 1,
+       "rightCensoredEpisodes": 0,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.2612,
+       "medianAllObservedDurationS": 0.2612,
+       "exitSurvivalGt0p1": 1,
+       "exitSurvivalGt0p5": 0,
+       "exitSurvivalGt1p0": 0,
+       "medianEpisodeContactFraction": 0.0014,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 4,
+       "impacts": 33,
+       "detaches": 3,
+       "contactImpulses": 448,
+       "impactsPerExposureS": 36.61,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 4,
+        "exitEpisodes": 4,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.2612
+       }
+      }
+     ]
+    }
+   },
+   "sensitivity": [
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "primary-f10-band5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.2151,
+      "enrichment": 1.394,
+      "entryRate": 0.332,
+      "escapeRate": 0.455,
+      "medianExitDurationS": 0.9725,
+      "contactFraction": 0.5049,
+      "episodes": 11,
+      "exits": 3
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.1642,
+      "enrichment": 1.632,
+      "entryRate": 0.195,
+      "escapeRate": 1.985,
+      "medianExitDurationS": 0.5879,
+      "contactFraction": 0.0432,
+      "episodes": 11,
+      "exits": 10
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "band2p5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.0908,
+      "enrichment": 0.903,
+      "entryRate": 0.395,
+      "escapeRate": 2.154,
+      "medianExitDurationS": 0.0295,
+      "contactFraction": 0.7167,
+      "episodes": 13,
+      "exits": 6
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.1642,
+      "enrichment": 1.632,
+      "entryRate": 0.195,
+      "escapeRate": 1.985,
+      "medianExitDurationS": 0.5879,
+      "contactFraction": 0.0432,
+      "episodes": 11,
+      "exits": 10
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "band10mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.3325,
+      "enrichment": 1.219,
+      "entryRate": 0.733,
+      "escapeRate": 1.079,
+      "medianExitDurationS": 0.1429,
+      "contactFraction": 0.3585,
+      "episodes": 21,
+      "exits": 11
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.1642,
+      "enrichment": 1.632,
+      "entryRate": 0.195,
+      "escapeRate": 1.985,
+      "medianExitDurationS": 0.5879,
+      "contactFraction": 0.0432,
+      "episodes": 11,
+      "exits": 10
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "nodal-set5pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.1421,
+      "enrichment": 1.297,
+      "entryRate": 0.38,
+      "escapeRate": 1.377,
+      "medianExitDurationS": 0.2355,
+      "contactFraction": 0.6684,
+      "episodes": 12,
+      "exits": 6
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.1642,
+      "enrichment": 1.632,
+      "entryRate": 0.195,
+      "escapeRate": 1.985,
+      "medianExitDurationS": 0.5879,
+      "contactFraction": 0.0432,
+      "episodes": 11,
+      "exits": 10
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "nodal-set20pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.3237,
+      "enrichment": 1.287,
+      "entryRate": 0.771,
+      "escapeRate": 1.309,
+      "medianExitDurationS": 0.1071,
+      "contactFraction": 0.367,
+      "episodes": 22,
+      "exits": 13
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.1642,
+      "enrichment": 1.632,
+      "entryRate": 0.195,
+      "escapeRate": 1.985,
+      "medianExitDurationS": 0.5879,
+      "contactFraction": 0.0432,
+      "episodes": 11,
+      "exits": 10
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "primary-f10-band5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.6535,
+      "enrichment": 4.236,
+      "entryRate": 0.912,
+      "escapeRate": 0.43,
+      "medianExitDurationS": 0.1118,
+      "contactFraction": 0.4496,
+      "episodes": 20,
+      "exits": 8
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0317,
+      "enrichment": 0.315,
+      "entryRate": 0.109,
+      "escapeRate": 4.438,
+      "medianExitDurationS": 0.2612,
+      "contactFraction": 0.0031,
+      "episodes": 4,
+      "exits": 4
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "band2p5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.3845,
+      "enrichment": 3.822,
+      "entryRate": 1.313,
+      "escapeRate": 2.101,
+      "medianExitDurationS": 0.0707,
+      "contactFraction": 0.5544,
+      "episodes": 29,
+      "exits": 23
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0317,
+      "enrichment": 0.315,
+      "entryRate": 0.109,
+      "escapeRate": 4.438,
+      "medianExitDurationS": 0.2612,
+      "contactFraction": 0.0031,
+      "episodes": 4,
+      "exits": 4
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "band10mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.7075,
+      "enrichment": 2.594,
+      "entryRate": 0.721,
+      "escapeRate": 0.199,
+      "medianExitDurationS": 0.0559,
+      "contactFraction": 0.418,
+      "episodes": 19,
+      "exits": 4
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0317,
+      "enrichment": 0.315,
+      "entryRate": 0.109,
+      "escapeRate": 4.438,
+      "medianExitDurationS": 0.2612,
+      "contactFraction": 0.0031,
+      "episodes": 4,
+      "exits": 4
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "nodal-set5pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.4774,
+      "enrichment": 4.357,
+      "entryRate": 0.403,
+      "escapeRate": 0.442,
+      "medianExitDurationS": 0.3941,
+      "contactFraction": 0.5826,
+      "episodes": 14,
+      "exits": 6
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0317,
+      "enrichment": 0.315,
+      "entryRate": 0.109,
+      "escapeRate": 4.438,
+      "medianExitDurationS": 0.2612,
+      "contactFraction": 0.0031,
+      "episodes": 4,
+      "exits": 4
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "nodal-set20pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.6924,
+      "enrichment": 2.753,
+      "entryRate": 0.914,
+      "escapeRate": 0.254,
+      "medianExitDurationS": 0.2475,
+      "contactFraction": 0.4268,
+      "episodes": 20,
+      "exits": 5
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0317,
+      "enrichment": 0.315,
+      "entryRate": 0.109,
+      "escapeRate": 4.438,
+      "medianExitDurationS": 0.2612,
+      "contactFraction": 0.0031,
+      "episodes": 4,
+      "exits": 4
+     }
+    }
+   ]
+  },
+  {
+   "study": "m629-residence",
+   "case": "center-aspect1",
+   "drive": "center",
+   "aspect": 1,
+   "dt": 0.00014952153110047846,
+   "wallMs": 55353,
+   "fieldThresholds": {
+    "repro": {
+     "f0.05": 14.244954322414669,
+     "f0.1": 25.598984167562946,
+     "f0.2": 54.845482374010885
+    },
+    "warm": {
+     "f0.05": 21.659527024153025,
+     "f0.1": 38.92255334952132,
+     "f0.2": 83.38777957919446
+    },
+    "q90Repro": 242.58230837613112,
+    "q90Warm": 368.8193724012885
+   },
+   "primaryAreas": {
+    "repro": [
+     0.15651201788708777,
+     0.7434320849636669,
+     0.10005589714924538
+    ],
+    "warm": [
+     0.15651201788708777,
+     0.7434320849636669,
+     0.10005589714924538
+    ]
+   },
+   "primary": {
+    "reproduction": {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "primary-f10-band5mm",
+     "totalLiveExposureS": 31.5,
+     "initialPopulationExposureS": 31.5,
+     "lostGrainsInWindow": 0,
+     "transitionsToNodeInterAntiLostCensored": [
+      [
+       0,
+       3,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       1,
+       0,
+       14
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       7
+      ]
+     ],
+     "zones": [
+      {
+       "zone": "node",
+       "areaFractionNull": 0.1565,
+       "exposureS": 2.761,
+       "occupancyLive": 0.0877,
+       "occupancyInitialPop": 0.0877,
+       "occupancyEnrichmentVsArea": 0.56,
+       "contactTimeS": 0.496,
+       "flightTimeS": 2.266,
+       "contactFraction": 0.1795,
+       "episodes": 3,
+       "entries": 0,
+       "exits": 3,
+       "entryRatePerOutsideS": 0,
+       "escapeRatePerS": 1.086,
+       "leftCensoredEpisodes": 3,
+       "rightCensoredEpisodes": 0,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.9194,
+       "medianAllObservedDurationS": 0.9194,
+       "exitSurvivalGt0p1": 1,
+       "exitSurvivalGt0p5": 1,
+       "exitSurvivalGt1p0": 0.333,
+       "medianEpisodeContactFraction": 0.179,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 3,
+       "impacts": 416,
+       "detaches": 96,
+       "contactImpulses": 12511,
+       "impactsPerExposureS": 150.65,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 3,
+        "exitEpisodes": 3,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.9194
+       }
+      },
+      {
+       "zone": "intermediate",
+       "areaFractionNull": 0.7434,
+       "exposureS": 19.54,
+       "occupancyLive": 0.6203,
+       "occupancyInitialPop": 0.6203,
+       "occupancyEnrichmentVsArea": 0.834,
+       "contactTimeS": 0.249,
+       "flightTimeS": 19.291,
+       "contactFraction": 0.0128,
+       "episodes": 15,
+       "entries": 3,
+       "exits": 1,
+       "entryRatePerOutsideS": 0.251,
+       "escapeRatePerS": 0.051,
+       "leftCensoredEpisodes": 12,
+       "rightCensoredEpisodes": 14,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 1.3016,
+       "medianAllObservedDurationS": 1.5,
+       "exitSurvivalGt0p1": 1,
+       "exitSurvivalGt0p5": 1,
+       "exitSurvivalGt1p0": 1,
+       "medianEpisodeContactFraction": 0.008,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 1,
+       "impacts": 885,
+       "detaches": 117,
+       "contactImpulses": 5966,
+       "impactsPerExposureS": 45.29,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 15,
+        "exitEpisodes": 1,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 1.3016
+       }
+      },
+      {
+       "zone": "antinode",
+       "areaFractionNull": 0.1001,
+       "exposureS": 9.198,
+       "occupancyLive": 0.292,
+       "occupancyInitialPop": 0.292,
+       "occupancyEnrichmentVsArea": 2.919,
+       "contactTimeS": 0.026,
+       "flightTimeS": 9.173,
+       "contactFraction": 0.0028,
+       "episodes": 7,
+       "entries": 1,
+       "exits": 0,
+       "entryRatePerOutsideS": 0.045,
+       "escapeRatePerS": 0,
+       "leftCensoredEpisodes": 6,
+       "rightCensoredEpisodes": 7,
+       "lostEpisodes": 0,
+       "medianExitDurationS": null,
+       "medianAllObservedDurationS": 1.5,
+       "exitSurvivalGt0p1": null,
+       "exitSurvivalGt0p5": null,
+       "exitSurvivalGt1p0": null,
+       "medianEpisodeContactFraction": 0.0017,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 0,
+       "impacts": 204,
+       "detaches": 16,
+       "contactImpulses": 615,
+       "impactsPerExposureS": 22.18,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 7,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": null
+       }
+      }
+     ]
+    },
+    "warmup": {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "primary-f10-band5mm",
+     "totalLiveExposureS": 29.133,
+     "initialPopulationExposureS": 31.5,
+     "lostGrainsInWindow": 4,
+     "transitionsToNodeInterAntiLostCensored": [
+      [
+       0,
+       1,
+       0,
+       0,
+       0
+      ],
+      [
+       1,
+       0,
+       3,
+       4,
+       6
+      ],
+      [
+       0,
+       1,
+       0,
+       0,
+       11
+      ]
+     ],
+     "zones": [
+      {
+       "zone": "node",
+       "areaFractionNull": 0.1565,
+       "exposureS": 0.582,
+       "occupancyLive": 0.02,
+       "occupancyInitialPop": 0.0185,
+       "occupancyEnrichmentVsArea": 0.128,
+       "contactTimeS": 0.1,
+       "flightTimeS": 0.482,
+       "contactFraction": 0.1715,
+       "episodes": 1,
+       "entries": 1,
+       "exits": 1,
+       "entryRatePerOutsideS": 0.035,
+       "escapeRatePerS": 1.718,
+       "leftCensoredEpisodes": 0,
+       "rightCensoredEpisodes": 0,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.5822,
+       "medianAllObservedDurationS": 0.5822,
+       "exitSurvivalGt0p1": 1,
+       "exitSurvivalGt0p5": 1,
+       "exitSurvivalGt1p0": 0,
+       "medianEpisodeContactFraction": 0.1715,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 1,
+       "impacts": 73,
+       "detaches": 12,
+       "contactImpulses": 2586,
+       "impactsPerExposureS": 125.38,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 1,
+        "exitEpisodes": 1,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.5822
+       }
+      },
+      {
+       "zone": "intermediate",
+       "areaFractionNull": 0.7434,
+       "exposureS": 12.332,
+       "occupancyLive": 0.4233,
+       "occupancyInitialPop": 0.3915,
+       "occupancyEnrichmentVsArea": 0.569,
+       "contactTimeS": 0.021,
+       "flightTimeS": 12.311,
+       "contactFraction": 0.0017,
+       "episodes": 14,
+       "entries": 2,
+       "exits": 4,
+       "entryRatePerOutsideS": 0.119,
+       "escapeRatePerS": 0.324,
+       "leftCensoredEpisodes": 12,
+       "rightCensoredEpisodes": 6,
+       "lostEpisodes": 4,
+       "medianExitDurationS": 0.6362,
+       "medianAllObservedDurationS": 0.6918,
+       "exitSurvivalGt0p1": 0.75,
+       "exitSurvivalGt0p5": 0.5,
+       "exitSurvivalGt1p0": 0,
+       "medianEpisodeContactFraction": 0.0015,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 4,
+       "impacts": 247,
+       "detaches": 19,
+       "contactImpulses": 518,
+       "impactsPerExposureS": 20.03,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 14,
+        "exitEpisodes": 4,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.6362
+       }
+      },
+      {
+       "zone": "antinode",
+       "areaFractionNull": 0.1001,
+       "exposureS": 16.219,
+       "occupancyLive": 0.5567,
+       "occupancyInitialPop": 0.5149,
+       "occupancyEnrichmentVsArea": 5.564,
+       "contactTimeS": 0.01,
+       "flightTimeS": 16.208,
+       "contactFraction": 0.0006,
+       "episodes": 12,
+       "entries": 3,
+       "exits": 1,
+       "entryRatePerOutsideS": 0.232,
+       "escapeRatePerS": 0.062,
+       "leftCensoredEpisodes": 9,
+       "rightCensoredEpisodes": 11,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.8082,
+       "medianAllObservedDurationS": 1.5,
+       "exitSurvivalGt0p1": 1,
+       "exitSurvivalGt0p5": 1,
+       "exitSurvivalGt1p0": 0,
+       "medianEpisodeContactFraction": 0.0007,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 1,
+       "impacts": 210,
+       "detaches": 11,
+       "contactImpulses": 274,
+       "impactsPerExposureS": 12.95,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 12,
+        "exitEpisodes": 1,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.8082
+       }
+      }
+     ]
+    }
+   },
+   "sensitivity": [
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "primary-f10-band5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.0877,
+      "enrichment": 0.56,
+      "entryRate": 0,
+      "escapeRate": 1.086,
+      "medianExitDurationS": 0.9194,
+      "contactFraction": 0.1795,
+      "episodes": 3,
+      "exits": 3
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.292,
+      "enrichment": 2.919,
+      "entryRate": 0.045,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0028,
+      "episodes": 7,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "band2p5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.0419,
+      "enrichment": 0.407,
+      "entryRate": 0,
+      "escapeRate": 1.517,
+      "medianExitDurationS": 0.7074,
+      "contactFraction": 0.2456,
+      "episodes": 2,
+      "exits": 2
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.292,
+      "enrichment": 2.919,
+      "entryRate": 0.045,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0028,
+      "episodes": 7,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "band10mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.1584,
+      "enrichment": 0.576,
+      "entryRate": 0,
+      "escapeRate": 1.202,
+      "medianExitDurationS": 1.1863,
+      "contactFraction": 0.1159,
+      "episodes": 6,
+      "exits": 6
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.292,
+      "enrichment": 2.919,
+      "entryRate": 0.045,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0028,
+      "episodes": 7,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "nodal-set5pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.0345,
+      "enrichment": 0.312,
+      "entryRate": 0.033,
+      "escapeRate": 2.758,
+      "medianExitDurationS": 0.3876,
+      "contactFraction": 0.3345,
+      "episodes": 3,
+      "exits": 3
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.292,
+      "enrichment": 2.919,
+      "entryRate": 0.045,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0028,
+      "episodes": 7,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "nodal-set20pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.1463,
+      "enrichment": 0.582,
+      "entryRate": 0,
+      "escapeRate": 1.302,
+      "medianExitDurationS": 1.044,
+      "contactFraction": 0.1251,
+      "episodes": 6,
+      "exits": 6
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.292,
+      "enrichment": 2.919,
+      "entryRate": 0.045,
+      "escapeRate": 0,
+      "medianExitDurationS": null,
+      "contactFraction": 0.0028,
+      "episodes": 7,
+      "exits": 0
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "primary-f10-band5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.02,
+      "enrichment": 0.128,
+      "entryRate": 0.035,
+      "escapeRate": 1.718,
+      "medianExitDurationS": 0.5822,
+      "contactFraction": 0.1715,
+      "episodes": 1,
+      "exits": 1
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.5567,
+      "enrichment": 5.564,
+      "entryRate": 0.232,
+      "escapeRate": 0.062,
+      "medianExitDurationS": 0.8082,
+      "contactFraction": 0.0006,
+      "episodes": 12,
+      "exits": 1
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "band2p5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.008,
+      "enrichment": 0.078,
+      "entryRate": 0.035,
+      "escapeRate": 4.295,
+      "medianExitDurationS": 0.2328,
+      "contactFraction": 0.3998,
+      "episodes": 1,
+      "exits": 1
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.5567,
+      "enrichment": 5.564,
+      "entryRate": 0.232,
+      "escapeRate": 0.062,
+      "medianExitDurationS": 0.8082,
+      "contactFraction": 0.0006,
+      "episodes": 12,
+      "exits": 1
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "band10mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.0656,
+      "enrichment": 0.239,
+      "entryRate": 0.11,
+      "escapeRate": 1.046,
+      "medianExitDurationS": 1.0588,
+      "contactFraction": 0.0553,
+      "episodes": 3,
+      "exits": 2
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.5567,
+      "enrichment": 5.564,
+      "entryRate": 0.232,
+      "escapeRate": 0.062,
+      "medianExitDurationS": 0.8082,
+      "contactFraction": 0.0006,
+      "episodes": 12,
+      "exits": 1
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "nodal-set5pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.0173,
+      "enrichment": 0.156,
+      "entryRate": 0.035,
+      "escapeRate": 1.989,
+      "medianExitDurationS": 0.5027,
+      "contactFraction": 0.1987,
+      "episodes": 1,
+      "exits": 1
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.5567,
+      "enrichment": 5.564,
+      "entryRate": 0.232,
+      "escapeRate": 0.062,
+      "medianExitDurationS": 0.8082,
+      "contactFraction": 0.0006,
+      "episodes": 12,
+      "exits": 1
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "nodal-set20pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.0457,
+      "enrichment": 0.182,
+      "entryRate": 0.072,
+      "escapeRate": 0.752,
+      "medianExitDurationS": 0.9892,
+      "contactFraction": 0.0774,
+      "episodes": 2,
+      "exits": 1
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.5567,
+      "enrichment": 5.564,
+      "entryRate": 0.232,
+      "escapeRate": 0.062,
+      "medianExitDurationS": 0.8082,
+      "contactFraction": 0.0006,
+      "episodes": 12,
+      "exits": 1
+     }
+    }
+   ]
+  },
+  {
+   "study": "m629-residence",
+   "case": "center-aspect1p5",
+   "drive": "center",
+   "aspect": 1.5,
+   "dt": 0.00014952153110047846,
+   "wallMs": 39795,
+   "fieldThresholds": {
+    "repro": {
+     "f0.05": 14.244954322414669,
+     "f0.1": 25.598984167562946,
+     "f0.2": 54.845482374010885
+    },
+    "warm": {
+     "f0.05": 21.659527024153025,
+     "f0.1": 38.92255334952132,
+     "f0.2": 83.38777957919446
+    },
+    "q90Repro": 242.58230837613112,
+    "q90Warm": 368.8193724012885
+   },
+   "primaryAreas": {
+    "repro": [
+     0.15651201788708777,
+     0.7434320849636669,
+     0.10005589714924538
+    ],
+    "warm": [
+     0.15651201788708777,
+     0.7434320849636669,
+     0.10005589714924538
+    ]
+   },
+   "primary": {
+    "reproduction": {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "primary-f10-band5mm",
+     "totalLiveExposureS": 29.759,
+     "initialPopulationExposureS": 31.5,
+     "lostGrainsInWindow": 3,
+     "transitionsToNodeInterAntiLostCensored": [
+      [
+       0,
+       13,
+       0,
+       0,
+       9
+      ],
+      [
+       19,
+       0,
+       11,
+       3,
+       8
+      ],
+      [
+       0,
+       16,
+       0,
+       0,
+       1
+      ]
+     ],
+     "zones": [
+      {
+       "zone": "node",
+       "areaFractionNull": 0.1565,
+       "exposureS": 10.697,
+       "occupancyLive": 0.3595,
+       "occupancyInitialPop": 0.3396,
+       "occupancyEnrichmentVsArea": 2.297,
+       "contactTimeS": 2.344,
+       "flightTimeS": 8.353,
+       "contactFraction": 0.2191,
+       "episodes": 22,
+       "entries": 19,
+       "exits": 13,
+       "entryRatePerOutsideS": 0.997,
+       "escapeRatePerS": 1.215,
+       "leftCensoredEpisodes": 3,
+       "rightCensoredEpisodes": 9,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.1184,
+       "medianAllObservedDurationS": 0.4019,
+       "exitSurvivalGt0p1": 0.692,
+       "exitSurvivalGt0p5": 0.231,
+       "exitSurvivalGt1p0": 0,
+       "medianEpisodeContactFraction": 0.0706,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 13,
+       "impacts": 2299,
+       "detaches": 676,
+       "contactImpulses": 334337,
+       "impactsPerExposureS": 214.92,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 22,
+        "exitEpisodes": 13,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.1184
+       }
+      },
+      {
+       "zone": "intermediate",
+       "areaFractionNull": 0.7434,
+       "exposureS": 12.494,
+       "occupancyLive": 0.4198,
+       "occupancyInitialPop": 0.3966,
+       "occupancyEnrichmentVsArea": 0.565,
+       "contactTimeS": 0.423,
+       "flightTimeS": 12.071,
+       "contactFraction": 0.0338,
+       "episodes": 41,
+       "entries": 29,
+       "exits": 30,
+       "entryRatePerOutsideS": 1.68,
+       "escapeRatePerS": 2.401,
+       "leftCensoredEpisodes": 12,
+       "rightCensoredEpisodes": 8,
+       "lostEpisodes": 3,
+       "medianExitDurationS": 0.2086,
+       "medianAllObservedDurationS": 0.1835,
+       "exitSurvivalGt0p1": 0.8,
+       "exitSurvivalGt0p5": 0.233,
+       "exitSurvivalGt1p0": 0.033,
+       "medianEpisodeContactFraction": 0.0044,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 30,
+       "impacts": 910,
+       "detaches": 183,
+       "contactImpulses": 66334,
+       "impactsPerExposureS": 72.84,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 41,
+        "exitEpisodes": 30,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.2086
+       }
+      },
+      {
+       "zone": "antinode",
+       "areaFractionNull": 0.1001,
+       "exposureS": 6.568,
+       "occupancyLive": 0.2207,
+       "occupancyInitialPop": 0.2085,
+       "occupancyEnrichmentVsArea": 2.206,
+       "contactTimeS": 0.074,
+       "flightTimeS": 6.494,
+       "contactFraction": 0.0113,
+       "episodes": 17,
+       "entries": 11,
+       "exits": 16,
+       "entryRatePerOutsideS": 0.474,
+       "escapeRatePerS": 2.436,
+       "leftCensoredEpisodes": 6,
+       "rightCensoredEpisodes": 1,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.3263,
+       "medianAllObservedDurationS": 0.3263,
+       "exitSurvivalGt0p1": 1,
+       "exitSurvivalGt0p5": 0.188,
+       "exitSurvivalGt1p0": 0.063,
+       "medianEpisodeContactFraction": 0.005,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 16,
+       "impacts": 305,
+       "detaches": 45,
+       "contactImpulses": 11893,
+       "impactsPerExposureS": 46.44,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 17,
+        "exitEpisodes": 16,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.3263
+       }
+      }
+     ]
+    },
+    "warmup": {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "primary-f10-band5mm",
+     "totalLiveExposureS": 19.929,
+     "initialPopulationExposureS": 31.5,
+     "lostGrainsInWindow": 4,
+     "transitionsToNodeInterAntiLostCensored": [
+      [
+       0,
+       16,
+       0,
+       0,
+       9
+      ],
+      [
+       15,
+       0,
+       0,
+       4,
+       2
+      ],
+      [
+       0,
+       2,
+       0,
+       0,
+       0
+      ]
+     ],
+     "zones": [
+      {
+       "zone": "node",
+       "areaFractionNull": 0.1565,
+       "exposureS": 16.055,
+       "occupancyLive": 0.8056,
+       "occupancyInitialPop": 0.5097,
+       "occupancyEnrichmentVsArea": 5.147,
+       "contactTimeS": 4.118,
+       "flightTimeS": 11.937,
+       "contactFraction": 0.2565,
+       "episodes": 25,
+       "entries": 15,
+       "exits": 16,
+       "entryRatePerOutsideS": 3.872,
+       "escapeRatePerS": 0.997,
+       "leftCensoredEpisodes": 10,
+       "rightCensoredEpisodes": 9,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.2765,
+       "medianAllObservedDurationS": 0.6077,
+       "exitSurvivalGt0p1": 0.75,
+       "exitSurvivalGt0p5": 0.313,
+       "exitSurvivalGt1p0": 0.125,
+       "medianEpisodeContactFraction": 0.158,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 16,
+       "impacts": 3837,
+       "detaches": 1202,
+       "contactImpulses": 566318,
+       "impactsPerExposureS": 238.98,
+       "contactDominant": {
+        "episodes": 2,
+        "exitEpisodes": 1,
+        "durationShareOfZone": 0.1247,
+        "medianExitDurationS": 1.0199
+       },
+       "flightDominant": {
+        "episodes": 23,
+        "exitEpisodes": 15,
+        "durationShareOfZone": 0.8753,
+        "medianExitDurationS": 0.206
+       }
+      },
+      {
+       "zone": "intermediate",
+       "areaFractionNull": 0.7434,
+       "exposureS": 3.698,
+       "occupancyLive": 0.1856,
+       "occupancyInitialPop": 0.1174,
+       "occupancyEnrichmentVsArea": 0.25,
+       "contactTimeS": 0.03,
+       "flightTimeS": 3.668,
+       "contactFraction": 0.0082,
+       "episodes": 21,
+       "entries": 18,
+       "exits": 15,
+       "entryRatePerOutsideS": 1.109,
+       "escapeRatePerS": 4.056,
+       "leftCensoredEpisodes": 3,
+       "rightCensoredEpisodes": 2,
+       "lostEpisodes": 4,
+       "medianExitDurationS": 0.077,
+       "medianAllObservedDurationS": 0.1382,
+       "exitSurvivalGt0p1": 0.467,
+       "exitSurvivalGt0p5": 0.067,
+       "exitSurvivalGt1p0": 0,
+       "medianEpisodeContactFraction": 0,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 15,
+       "impacts": 166,
+       "detaches": 23,
+       "contactImpulses": 4748,
+       "impactsPerExposureS": 44.88,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 21,
+        "exitEpisodes": 15,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.077
+       }
+      },
+      {
+       "zone": "antinode",
+       "areaFractionNull": 0.1001,
+       "exposureS": 0.175,
+       "occupancyLive": 0.0088,
+       "occupancyInitialPop": 0.0056,
+       "occupancyEnrichmentVsArea": 0.088,
+       "contactTimeS": 0,
+       "flightTimeS": 0.175,
+       "contactFraction": 0,
+       "episodes": 2,
+       "entries": 0,
+       "exits": 2,
+       "entryRatePerOutsideS": 0,
+       "escapeRatePerS": 11.413,
+       "leftCensoredEpisodes": 2,
+       "rightCensoredEpisodes": 0,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.1379,
+       "medianAllObservedDurationS": 0.1379,
+       "exitSurvivalGt0p1": 0.5,
+       "exitSurvivalGt0p5": 0,
+       "exitSurvivalGt1p0": 0,
+       "medianEpisodeContactFraction": 0,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 2,
+       "impacts": 2,
+       "detaches": 0,
+       "contactImpulses": 0,
+       "impactsPerExposureS": 11.41,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 2,
+        "exitEpisodes": 2,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.1379
+       }
+      }
+     ]
+    }
+   },
+   "sensitivity": [
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "primary-f10-band5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.3595,
+      "enrichment": 2.297,
+      "entryRate": 0.997,
+      "escapeRate": 1.215,
+      "medianExitDurationS": 0.1184,
+      "contactFraction": 0.2191,
+      "episodes": 22,
+      "exits": 13
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2207,
+      "enrichment": 2.206,
+      "entryRate": 0.474,
+      "escapeRate": 2.436,
+      "medianExitDurationS": 0.3263,
+      "contactFraction": 0.0113,
+      "episodes": 17,
+      "exits": 16
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "band2p5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.1869,
+      "enrichment": 1.817,
+      "entryRate": 1.901,
+      "escapeRate": 7.371,
+      "medianExitDurationS": 0.0356,
+      "contactFraction": 0.2578,
+      "episodes": 48,
+      "exits": 41
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2207,
+      "enrichment": 2.206,
+      "entryRate": 0.474,
+      "escapeRate": 2.436,
+      "medianExitDurationS": 0.3263,
+      "contactFraction": 0.0113,
+      "episodes": 17,
+      "exits": 16
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "band10mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.4603,
+      "enrichment": 1.674,
+      "entryRate": 1.183,
+      "escapeRate": 1.022,
+      "medianExitDurationS": 0.09,
+      "contactFraction": 0.1813,
+      "episodes": 25,
+      "exits": 14
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2207,
+      "enrichment": 2.206,
+      "entryRate": 0.474,
+      "escapeRate": 2.436,
+      "medianExitDurationS": 0.3263,
+      "contactFraction": 0.0113,
+      "episodes": 17,
+      "exits": 16
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "nodal-set5pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.2596,
+      "enrichment": 2.345,
+      "entryRate": 1.225,
+      "escapeRate": 2.848,
+      "medianExitDurationS": 0.1015,
+      "contactFraction": 0.2827,
+      "episodes": 29,
+      "exits": 22
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2207,
+      "enrichment": 2.206,
+      "entryRate": 0.474,
+      "escapeRate": 2.436,
+      "medianExitDurationS": 0.3263,
+      "contactFraction": 0.0113,
+      "episodes": 17,
+      "exits": 16
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "nodal-set20pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.4482,
+      "enrichment": 1.782,
+      "entryRate": 1.218,
+      "escapeRate": 1.2,
+      "medianExitDurationS": 0.1229,
+      "contactFraction": 0.1856,
+      "episodes": 26,
+      "exits": 16
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2207,
+      "enrichment": 2.206,
+      "entryRate": 0.474,
+      "escapeRate": 2.436,
+      "medianExitDurationS": 0.3263,
+      "contactFraction": 0.0113,
+      "episodes": 17,
+      "exits": 16
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "primary-f10-band5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.8056,
+      "enrichment": 5.147,
+      "entryRate": 3.872,
+      "escapeRate": 0.997,
+      "medianExitDurationS": 0.2765,
+      "contactFraction": 0.2565,
+      "episodes": 25,
+      "exits": 16
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0088,
+      "enrichment": 0.088,
+      "entryRate": 0,
+      "escapeRate": 11.413,
+      "medianExitDurationS": 0.1379,
+      "contactFraction": 0,
+      "episodes": 2,
+      "exits": 2
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "band2p5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.466,
+      "enrichment": 4.531,
+      "entryRate": 3.665,
+      "escapeRate": 4.415,
+      "medianExitDurationS": 0.1308,
+      "contactFraction": 0.3556,
+      "episodes": 47,
+      "exits": 41
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0088,
+      "enrichment": 0.088,
+      "entryRate": 0,
+      "escapeRate": 11.413,
+      "medianExitDurationS": 0.1379,
+      "contactFraction": 0,
+      "episodes": 2,
+      "exits": 2
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "band10mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.8813,
+      "enrichment": 3.205,
+      "entryRate": 2.959,
+      "escapeRate": 0.455,
+      "medianExitDurationS": 0.6428,
+      "contactFraction": 0.2356,
+      "episodes": 17,
+      "exits": 8
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0088,
+      "enrichment": 0.088,
+      "entryRate": 0,
+      "escapeRate": 11.413,
+      "medianExitDurationS": 0.1379,
+      "contactFraction": 0,
+      "episodes": 2,
+      "exits": 2
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "nodal-set5pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.5998,
+      "enrichment": 5.42,
+      "entryRate": 2.257,
+      "escapeRate": 1.757,
+      "medianExitDurationS": 0.4378,
+      "contactFraction": 0.3359,
+      "episodes": 27,
+      "exits": 21
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0088,
+      "enrichment": 0.088,
+      "entryRate": 0,
+      "escapeRate": 11.413,
+      "medianExitDurationS": 0.1379,
+      "contactFraction": 0,
+      "episodes": 2,
+      "exits": 2
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.29994019138756
+     ],
+     "definition": "nodal-set20pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.8608,
+      "enrichment": 3.422,
+      "entryRate": 2.885,
+      "escapeRate": 0.525,
+      "medianExitDurationS": 0.3246,
+      "contactFraction": 0.2408,
+      "episodes": 18,
+      "exits": 9
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0088,
+      "enrichment": 0.088,
+      "entryRate": 0,
+      "escapeRate": 11.413,
+      "medianExitDurationS": 0.1379,
+      "contactFraction": 0,
+      "episodes": 2,
+      "exits": 2
+     }
+    }
+   ]
+  },
+  {
+   "study": "m629-residence",
+   "case": "eccentric-aspect1p5-dt2",
+   "drive": "eccentric",
+   "aspect": 1.5,
+   "dt": 7.476076555023923e-05,
+   "wallMs": 58047,
+   "fieldThresholds": {
+    "repro": {
+     "f0.05": 5.8770177352718544,
+     "f0.1": 10.481095847647595,
+     "f0.2": 22.414640236459594
+    },
+    "warm": {
+     "f0.05": 8.851017180541422,
+     "f0.1": 15.867938975363284,
+     "f0.2": 34.03540931524242
+    },
+    "q90Repro": 98.82768465114366,
+    "q90Warm": 150.2526426971442
+   },
+   "primaryAreas": {
+    "repro": [
+     0.1542761319172722,
+     0.7451089994410285,
+     0.10061486864169927
+    ],
+    "warm": [
+     0.1542761319172722,
+     0.7451089994410285,
+     0.10061486864169927
+    ]
+   },
+   "primary": {
+    "reproduction": {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "primary-f10-band5mm",
+     "totalLiveExposureS": 30.033,
+     "initialPopulationExposureS": 31.5,
+     "lostGrainsInWindow": 2,
+     "transitionsToNodeInterAntiLostCensored": [
+      [
+       0,
+       3,
+       0,
+       0,
+       6
+      ],
+      [
+       6,
+       0,
+       7,
+       2,
+       8
+      ],
+      [
+       0,
+       8,
+       0,
+       0,
+       5
+      ]
+     ],
+     "zones": [
+      {
+       "zone": "node",
+       "areaFractionNull": 0.1543,
+       "exposureS": 5.535,
+       "occupancyLive": 0.1843,
+       "occupancyInitialPop": 0.1757,
+       "occupancyEnrichmentVsArea": 1.195,
+       "contactTimeS": 2.234,
+       "flightTimeS": 3.301,
+       "contactFraction": 0.4037,
+       "episodes": 9,
+       "entries": 6,
+       "exits": 3,
+       "entryRatePerOutsideS": 0.245,
+       "escapeRatePerS": 0.542,
+       "leftCensoredEpisodes": 3,
+       "rightCensoredEpisodes": 6,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.972,
+       "medianAllObservedDurationS": 0.5981,
+       "exitSurvivalGt0p1": 1,
+       "exitSurvivalGt0p5": 1,
+       "exitSurvivalGt1p0": 0,
+       "medianEpisodeContactFraction": 0.3679,
+       "exitsFromContactInterval": 1,
+       "exitsFromFlightInterval": 2,
+       "impacts": 1611,
+       "detaches": 482,
+       "contactImpulses": 709618,
+       "impactsPerExposureS": 291.05,
+       "contactDominant": {
+        "episodes": 3,
+        "exitEpisodes": 2,
+        "durationShareOfZone": 0.4272,
+        "medianExitDurationS": 0.982
+       },
+       "flightDominant": {
+        "episodes": 6,
+        "exitEpisodes": 1,
+        "durationShareOfZone": 0.5728,
+        "medianExitDurationS": 0.972
+       }
+      },
+      {
+       "zone": "intermediate",
+       "areaFractionNull": 0.7451,
+       "exposureS": 16.692,
+       "occupancyLive": 0.5558,
+       "occupancyInitialPop": 0.5299,
+       "occupancyEnrichmentVsArea": 0.746,
+       "contactTimeS": 1.361,
+       "flightTimeS": 15.331,
+       "contactFraction": 0.0816,
+       "episodes": 23,
+       "entries": 11,
+       "exits": 13,
+       "entryRatePerOutsideS": 0.825,
+       "escapeRatePerS": 0.779,
+       "leftCensoredEpisodes": 12,
+       "rightCensoredEpisodes": 8,
+       "lostEpisodes": 2,
+       "medianExitDurationS": 0.3914,
+       "medianAllObservedDurationS": 0.5935,
+       "exitSurvivalGt0p1": 0.846,
+       "exitSurvivalGt0p5": 0.462,
+       "exitSurvivalGt1p0": 0.308,
+       "medianEpisodeContactFraction": 0.0488,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 13,
+       "impacts": 2487,
+       "detaches": 541,
+       "contactImpulses": 430742,
+       "impactsPerExposureS": 148.99,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 23,
+        "exitEpisodes": 13,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.3914
+       }
+      },
+      {
+       "zone": "antinode",
+       "areaFractionNull": 0.1006,
+       "exposureS": 7.806,
+       "occupancyLive": 0.2599,
+       "occupancyInitialPop": 0.2478,
+       "occupancyEnrichmentVsArea": 2.583,
+       "contactTimeS": 0.242,
+       "flightTimeS": 7.563,
+       "contactFraction": 0.031,
+       "episodes": 13,
+       "entries": 7,
+       "exits": 8,
+       "entryRatePerOutsideS": 0.315,
+       "escapeRatePerS": 1.025,
+       "leftCensoredEpisodes": 6,
+       "rightCensoredEpisodes": 5,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.5481,
+       "medianAllObservedDurationS": 0.411,
+       "exitSurvivalGt0p1": 1,
+       "exitSurvivalGt0p5": 0.5,
+       "exitSurvivalGt1p0": 0.125,
+       "medianEpisodeContactFraction": 0.027,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 8,
+       "impacts": 584,
+       "detaches": 98,
+       "contactImpulses": 70130,
+       "impactsPerExposureS": 74.82,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 13,
+        "exitEpisodes": 8,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.5481
+       }
+      }
+     ]
+    },
+    "warmup": {
+     "window": [
+      1.8,
+      3.30001495215311
+     ],
+     "definition": "primary-f10-band5mm",
+     "totalLiveExposureS": 27.115,
+     "initialPopulationExposureS": 31.5,
+     "lostGrainsInWindow": 2,
+     "transitionsToNodeInterAntiLostCensored": [
+      [
+       0,
+       22,
+       0,
+       0,
+       13
+      ],
+      [
+       29,
+       0,
+       0,
+       2,
+       4
+      ],
+      [
+       0,
+       4,
+       0,
+       0,
+       0
+      ]
+     ],
+     "zones": [
+      {
+       "zone": "node",
+       "areaFractionNull": 0.1543,
+       "exposureS": 16.601,
+       "occupancyLive": 0.6122,
+       "occupancyInitialPop": 0.527,
+       "occupancyEnrichmentVsArea": 3.968,
+       "contactTimeS": 4.212,
+       "flightTimeS": 12.389,
+       "contactFraction": 0.2537,
+       "episodes": 35,
+       "entries": 29,
+       "exits": 22,
+       "entryRatePerOutsideS": 2.758,
+       "escapeRatePerS": 1.325,
+       "leftCensoredEpisodes": 6,
+       "rightCensoredEpisodes": 13,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.0584,
+       "medianAllObservedDurationS": 0.0777,
+       "exitSurvivalGt0p1": 0.227,
+       "exitSurvivalGt0p5": 0.182,
+       "exitSurvivalGt1p0": 0.045,
+       "medianEpisodeContactFraction": 0.0952,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 22,
+       "impacts": 5597,
+       "detaches": 1826,
+       "contactImpulses": 1139630,
+       "impactsPerExposureS": 337.15,
+       "contactDominant": {
+        "episodes": 1,
+        "exitEpisodes": 1,
+        "durationShareOfZone": 0.0722,
+        "medianExitDurationS": 1.1987
+       },
+       "flightDominant": {
+        "episodes": 34,
+        "exitEpisodes": 21,
+        "durationShareOfZone": 0.9278,
+        "medianExitDurationS": 0.0484
+       }
+      },
+      {
+       "zone": "intermediate",
+       "areaFractionNull": 0.7451,
+       "exposureS": 9.02,
+       "occupancyLive": 0.3326,
+       "occupancyInitialPop": 0.2863,
+       "occupancyEnrichmentVsArea": 0.446,
+       "contactTimeS": 0.371,
+       "flightTimeS": 8.648,
+       "contactFraction": 0.0412,
+       "episodes": 35,
+       "entries": 26,
+       "exits": 29,
+       "entryRatePerOutsideS": 1.437,
+       "escapeRatePerS": 3.215,
+       "leftCensoredEpisodes": 9,
+       "rightCensoredEpisodes": 4,
+       "lostEpisodes": 2,
+       "medianExitDurationS": 0.1124,
+       "medianAllObservedDurationS": 0.1154,
+       "exitSurvivalGt0p1": 0.517,
+       "exitSurvivalGt0p5": 0.103,
+       "exitSurvivalGt1p0": 0.034,
+       "medianEpisodeContactFraction": 0.0368,
+       "exitsFromContactInterval": 3,
+       "exitsFromFlightInterval": 26,
+       "impacts": 1220,
+       "detaches": 221,
+       "contactImpulses": 100417,
+       "impactsPerExposureS": 135.26,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 35,
+        "exitEpisodes": 29,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.1124
+       }
+      },
+      {
+       "zone": "antinode",
+       "areaFractionNull": 0.1006,
+       "exposureS": 1.495,
+       "occupancyLive": 0.0551,
+       "occupancyInitialPop": 0.0475,
+       "occupancyEnrichmentVsArea": 0.548,
+       "contactTimeS": 0.004,
+       "flightTimeS": 1.491,
+       "contactFraction": 0.0026,
+       "episodes": 4,
+       "entries": 0,
+       "exits": 4,
+       "entryRatePerOutsideS": 0,
+       "escapeRatePerS": 2.676,
+       "leftCensoredEpisodes": 4,
+       "rightCensoredEpisodes": 0,
+       "lostEpisodes": 0,
+       "medianExitDurationS": 0.6305,
+       "medianAllObservedDurationS": 0.6305,
+       "exitSurvivalGt0p1": 0.75,
+       "exitSurvivalGt0p5": 0.5,
+       "exitSurvivalGt1p0": 0,
+       "medianEpisodeContactFraction": 0.0038,
+       "exitsFromContactInterval": 0,
+       "exitsFromFlightInterval": 4,
+       "impacts": 45,
+       "detaches": 5,
+       "contactImpulses": 1358,
+       "impactsPerExposureS": 30.1,
+       "contactDominant": {
+        "episodes": 0,
+        "exitEpisodes": 0,
+        "durationShareOfZone": 0,
+        "medianExitDurationS": null
+       },
+       "flightDominant": {
+        "episodes": 4,
+        "exitEpisodes": 4,
+        "durationShareOfZone": 1,
+        "medianExitDurationS": 0.6305
+       }
+      }
+     ]
+    }
+   },
+   "sensitivity": [
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "primary-f10-band5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.1843,
+      "enrichment": 1.195,
+      "entryRate": 0.245,
+      "escapeRate": 0.542,
+      "medianExitDurationS": 0.972,
+      "contactFraction": 0.4037,
+      "episodes": 9,
+      "exits": 3
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2599,
+      "enrichment": 2.583,
+      "entryRate": 0.315,
+      "escapeRate": 1.025,
+      "medianExitDurationS": 0.5481,
+      "contactFraction": 0.031,
+      "episodes": 13,
+      "exits": 8
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "band2p5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.0686,
+      "enrichment": 0.681,
+      "entryRate": 0.143,
+      "escapeRate": 1.457,
+      "medianExitDurationS": 0.2964,
+      "contactFraction": 0.5318,
+      "episodes": 6,
+      "exits": 3
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2599,
+      "enrichment": 2.583,
+      "entryRate": 0.315,
+      "escapeRate": 1.025,
+      "medianExitDurationS": 0.5481,
+      "contactFraction": 0.031,
+      "episodes": 13,
+      "exits": 8
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "band10mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.3344,
+      "enrichment": 1.226,
+      "entryRate": 0.55,
+      "escapeRate": 0.498,
+      "medianExitDurationS": 0.0529,
+      "contactFraction": 0.2618,
+      "episodes": 17,
+      "exits": 5
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2599,
+      "enrichment": 2.583,
+      "entryRate": 0.315,
+      "escapeRate": 1.025,
+      "medianExitDurationS": 0.5481,
+      "contactFraction": 0.031,
+      "episodes": 13,
+      "exits": 8
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "nodal-set5pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.0961,
+      "enrichment": 0.877,
+      "entryRate": 0.147,
+      "escapeRate": 1.039,
+      "medianExitDurationS": 0.5635,
+      "contactFraction": 0.5765,
+      "episodes": 6,
+      "exits": 3
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2599,
+      "enrichment": 2.583,
+      "entryRate": 0.315,
+      "escapeRate": 1.025,
+      "medianExitDurationS": 0.5481,
+      "contactFraction": 0.031,
+      "episodes": 13,
+      "exits": 8
+     }
+    },
+    {
+     "window": [
+      0,
+      1.5
+     ],
+     "definition": "nodal-set20pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.3246,
+      "enrichment": 1.29,
+      "entryRate": 0.592,
+      "escapeRate": 0.718,
+      "medianExitDurationS": 0.2031,
+      "contactFraction": 0.2687,
+      "episodes": 18,
+      "exits": 7
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.2599,
+      "enrichment": 2.583,
+      "entryRate": 0.315,
+      "escapeRate": 1.025,
+      "medianExitDurationS": 0.5481,
+      "contactFraction": 0.031,
+      "episodes": 13,
+      "exits": 8
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.30001495215311
+     ],
+     "definition": "primary-f10-band5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.6122,
+      "enrichment": 3.968,
+      "entryRate": 2.758,
+      "escapeRate": 1.325,
+      "medianExitDurationS": 0.0584,
+      "contactFraction": 0.2537,
+      "episodes": 35,
+      "exits": 22
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0551,
+      "enrichment": 0.548,
+      "entryRate": 0,
+      "escapeRate": 2.676,
+      "medianExitDurationS": 0.6305,
+      "contactFraction": 0.0026,
+      "episodes": 4,
+      "exits": 4
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.30001495215311
+     ],
+     "definition": "band2p5mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.4217,
+      "enrichment": 4.191,
+      "entryRate": 1.212,
+      "escapeRate": 1.137,
+      "medianExitDurationS": 0.1681,
+      "contactFraction": 0.3262,
+      "episodes": 24,
+      "exits": 13
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0551,
+      "enrichment": 0.548,
+      "entryRate": 0,
+      "escapeRate": 2.676,
+      "medianExitDurationS": 0.6305,
+      "contactFraction": 0.0026,
+      "episodes": 4,
+      "exits": 4
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.30001495215311
+     ],
+     "definition": "band10mm",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.8618,
+      "enrichment": 3.159,
+      "entryRate": 2.668,
+      "escapeRate": 0.128,
+      "medianExitDurationS": 0.1037,
+      "contactFraction": 0.1953,
+      "episodes": 20,
+      "exits": 3
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0551,
+      "enrichment": 0.548,
+      "entryRate": 0,
+      "escapeRate": 2.676,
+      "medianExitDurationS": 0.6305,
+      "contactFraction": 0.0026,
+      "episodes": 4,
+      "exits": 4
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.30001495215311
+     ],
+     "definition": "nodal-set5pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.3859,
+      "enrichment": 3.522,
+      "entryRate": 1.681,
+      "escapeRate": 2.389,
+      "medianExitDurationS": 0.0353,
+      "contactFraction": 0.3195,
+      "episodes": 32,
+      "exits": 25
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0551,
+      "enrichment": 0.548,
+      "entryRate": 0,
+      "escapeRate": 2.676,
+      "medianExitDurationS": 0.6305,
+      "contactFraction": 0.0026,
+      "episodes": 4,
+      "exits": 4
+     }
+    },
+    {
+     "window": [
+      1.8,
+      3.30001495215311
+     ],
+     "definition": "nodal-set20pct",
+     "node": {
+      "zone": "node",
+      "occupancyLive": 0.8478,
+      "enrichment": 3.37,
+      "entryRate": 2.665,
+      "escapeRate": 0.174,
+      "medianExitDurationS": 0.3432,
+      "contactFraction": 0.1981,
+      "episodes": 21,
+      "exits": 4
+     },
+     "antinode": {
+      "zone": "antinode",
+      "occupancyLive": 0.0551,
+      "enrichment": 0.548,
+      "entryRate": 0,
+      "escapeRate": 2.676,
+      "medianExitDurationS": 0.6305,
+      "contactFraction": 0.0026,
+      "episodes": 4,
+      "exits": 4
+     }
+    }
+   ]
+  }
+ ]
+}

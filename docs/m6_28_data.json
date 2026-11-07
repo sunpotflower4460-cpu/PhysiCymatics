@@ -1,0 +1,275 @@
+{
+ "schema": "physicymatics.m628.measurements.v1",
+ "branch": "m6-28-nodal-density",
+ "baseCommit": "6a235de (PR #31 head)",
+ "params": {
+  "freqHz": 152,
+  "plateHalfThicknessM": 0.0005,
+  "dt": 0.00014952153110047846,
+  "nodalDefinition": "lowest decile cells of 49x49 time-averaged |wtt| grid; measurement only",
+  "orientations": "same deterministic grid as M6-27B"
+ },
+ "runs": [
+  {
+   "study": "m628-nodal",
+   "drive": "eccentric",
+   "aspect": 1,
+   "wallMs": 17856,
+   "nodalCellsRepro": 180,
+   "nullRepro": {
+    "nNull": 1789,
+    "medianDistMm": 20,
+    "frac2p5": 0.1006,
+    "frac5": 0.1543
+   },
+   "nullWarm": {
+    "nNull": 1789,
+    "medianDistMm": 20,
+    "frac2p5": 0.1006,
+    "frac5": 0.1543
+   },
+   "atStart": {
+    "nLive": 21,
+    "medianDistMm": 23.66,
+    "frac2p5": 0.0952,
+    "frac5": 0.1429,
+    "enrichment2p5": 0.95,
+    "enrichment5": 0.93,
+    "meanAct": 70.8,
+    "meanRmm": 55
+   },
+   "atReproEnd": {
+    "nLive": 21,
+    "medianDistMm": 27.58,
+    "frac2p5": 0,
+    "frac5": 0,
+    "enrichment2p5": 0,
+    "enrichment5": 0,
+    "meanAct": 78.9,
+    "meanRmm": 55.27
+   },
+   "atWarmStart": {
+    "nLive": 21,
+    "medianDistMm": 29.71,
+    "frac2p5": 0,
+    "frac5": 0,
+    "enrichment2p5": 0,
+    "enrichment5": 0,
+    "meanAct": 126.3,
+    "meanRmm": 55.35
+   },
+   "atWarmEnd": {
+    "nLive": 16,
+    "medianDistMm": 50.46,
+    "frac2p5": 0,
+    "frac5": 0,
+    "enrichment2p5": 0,
+    "enrichment5": 0,
+    "meanAct": 164.1,
+    "meanRmm": 31.58
+   },
+   "dirCorrWarm": 0.956
+  },
+  {
+   "study": "m628-nodal",
+   "drive": "eccentric",
+   "aspect": 1.5,
+   "wallMs": 19907,
+   "nodalCellsRepro": 180,
+   "nullRepro": {
+    "nNull": 1789,
+    "medianDistMm": 20,
+    "frac2p5": 0.1006,
+    "frac5": 0.1543
+   },
+   "nullWarm": {
+    "nNull": 1789,
+    "medianDistMm": 20,
+    "frac2p5": 0.1006,
+    "frac5": 0.1543
+   },
+   "atStart": {
+    "nLive": 21,
+    "medianDistMm": 23.66,
+    "frac2p5": 0.0952,
+    "frac5": 0.1429,
+    "enrichment2p5": 0.95,
+    "enrichment5": 0.93,
+    "meanAct": 70.8,
+    "meanRmm": 55
+   },
+   "atReproEnd": {
+    "nLive": 20,
+    "medianDistMm": 10.81,
+    "frac2p5": 0.35,
+    "frac5": 0.4,
+    "enrichment2p5": 3.48,
+    "enrichment5": 2.59,
+    "meanAct": 39.5,
+    "meanRmm": 73.6
+   },
+   "atWarmStart": {
+    "nLive": 20,
+    "medianDistMm": 4,
+    "frac2p5": 0.3,
+    "frac5": 0.55,
+    "enrichment2p5": 2.98,
+    "enrichment5": 3.56,
+    "meanAct": 48.1,
+    "meanRmm": 76.65
+   },
+   "atWarmEnd": {
+    "nLive": 18,
+    "medianDistMm": 4.33,
+    "frac2p5": 0.3333,
+    "frac5": 0.6667,
+    "enrichment2p5": 3.31,
+    "enrichment5": 4.32,
+    "meanAct": 33,
+    "meanRmm": 79.47
+   },
+   "dirCorrWarm": 0.597
+  },
+  {
+   "study": "m628-nodal",
+   "drive": "center",
+   "aspect": 1,
+   "wallMs": 17553,
+   "nodalCellsRepro": 184,
+   "nullRepro": {
+    "nNull": 1789,
+    "medianDistMm": 18.03,
+    "frac2p5": 0.1029,
+    "frac5": 0.1565
+   },
+   "nullWarm": {
+    "nNull": 1789,
+    "medianDistMm": 18.03,
+    "frac2p5": 0.1029,
+    "frac5": 0.1565
+   },
+   "atStart": {
+    "nLive": 21,
+    "medianDistMm": 23.66,
+    "frac2p5": 0.0952,
+    "frac5": 0.1429,
+    "enrichment2p5": 0.93,
+    "enrichment5": 0.91,
+    "meanAct": 173.8,
+    "meanRmm": 55
+   },
+   "atReproEnd": {
+    "nLive": 21,
+    "medianDistMm": 30.69,
+    "frac2p5": 0,
+    "frac5": 0,
+    "enrichment2p5": 0,
+    "enrichment5": 0,
+    "meanAct": 197.5,
+    "meanRmm": 54.21
+   },
+   "atWarmStart": {
+    "nLive": 21,
+    "medianDistMm": 30.07,
+    "frac2p5": 0,
+    "frac5": 0,
+    "enrichment2p5": 0,
+    "enrichment5": 0,
+    "meanAct": 319.3,
+    "meanRmm": 53.64
+   },
+   "atWarmEnd": {
+    "nLive": 17,
+    "medianDistMm": 61.7,
+    "frac2p5": 0,
+    "frac5": 0,
+    "enrichment2p5": 0,
+    "enrichment5": 0,
+    "meanAct": 382.3,
+    "meanRmm": 34.57
+   },
+   "dirCorrWarm": 0.903
+  },
+  {
+   "study": "m628-nodal",
+   "drive": "center",
+   "aspect": 1.5,
+   "wallMs": 15858,
+   "nodalCellsRepro": 184,
+   "nullRepro": {
+    "nNull": 1789,
+    "medianDistMm": 18.03,
+    "frac2p5": 0.1029,
+    "frac5": 0.1565
+   },
+   "nullWarm": {
+    "nNull": 1789,
+    "medianDistMm": 18.03,
+    "frac2p5": 0.1029,
+    "frac5": 0.1565
+   },
+   "atStart": {
+    "nLive": 21,
+    "medianDistMm": 23.66,
+    "frac2p5": 0.0952,
+    "frac5": 0.1429,
+    "enrichment2p5": 0.93,
+    "enrichment5": 0.91,
+    "meanAct": 173.8,
+    "meanRmm": 55
+   },
+   "atReproEnd": {
+    "nLive": 18,
+    "medianDistMm": 5.58,
+    "frac2p5": 0.3889,
+    "frac5": 0.5,
+    "enrichment2p5": 3.78,
+    "enrichment5": 3.19,
+    "meanAct": 84.3,
+    "meanRmm": 78.87
+   },
+   "atWarmStart": {
+    "nLive": 15,
+    "medianDistMm": 1.98,
+    "frac2p5": 0.5333,
+    "frac5": 0.6667,
+    "enrichment2p5": 5.18,
+    "enrichment5": 4.26,
+    "meanAct": 111.4,
+    "meanRmm": 76.64
+   },
+   "atWarmEnd": {
+    "nLive": 11,
+    "medianDistMm": 2.08,
+    "frac2p5": 0.5455,
+    "frac5": 0.8182,
+    "enrichment2p5": 5.3,
+    "enrichment5": 5.23,
+    "meanAct": 51.9,
+    "meanRmm": 79.55
+   },
+   "dirCorrWarm": 0.504
+  },
+  {
+   "study": "m628-dt2",
+   "aspect": 1.5,
+   "wallMs": 16345,
+   "nullRepro": {
+    "nNull": 1789,
+    "medianDistMm": 20,
+    "frac2p5": 0.1006,
+    "frac5": 0.1543
+   },
+   "atReproEnd": {
+    "nLive": 19,
+    "medianDistMm": 8.89,
+    "frac2p5": 0.1579,
+    "frac5": 0.3158,
+    "enrichment2p5": 1.57,
+    "enrichment5": 2.05,
+    "meanAct": 52.2,
+    "meanRmm": 60.69
+   }
+  }
+ ]
+}
